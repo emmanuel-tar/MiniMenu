@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String   // ADMIN, MANAGER, CASHIER, KITCHEN
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  stationId String?
+  station   ProductionStation? @relation(fields: [stationId], references: [id])
+}
+
+model Company {
+  id            String   @id @default(uuid())
+  name          String
+  logo          String?
+  currency      String   @default("USD")
+  taxRate       Float    @default(0)
+  contactEmail  String?
+  phone         String?
+  address       String?
+  updatedAt     DateTime @updatedAt
+}
+
+model Category {
+  id          String    @id @default(uuid())
+  name        String
+  description String?
+  products    Product[]
+  createdAt   DateTime  @default(now())
+}
+
+model ProductGroup {
+  id          String    @id @default(uuid())
+  name        String
+  products    Product[]
+  createdAt   DateTime  @default(now())
+}
+
+model ProductionStation {
+  id          String    @id @default(uuid())
+  name        String    // Kitchen, Bar, Grill, etc.
+  description String?
+  users       User[]
+  products    Product[]
+  orderItems  OrderItem[]
+  kots        KOT[]
+  createdAt   DateTime  @default(now())
+}
+
+model Product {
+  id          String    @id @default(uuid())
+  name        String
+  description String?
+  price       Float
+  image       String?
+  available   Boolean   @default(true)
+  categoryId  String
+  category    Category  @relation(fields: [categoryId], references: [id])
+  groupId     String
+  group       ProductGroup @relation(fields: [groupId], references: [id])
+  stationId   String
+  station     ProductionStation @relation(fields: [stationId], references: [id])
+  inventoryItemId String?
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id])
+  orderItems  OrderItem[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model InventoryItem {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  sku         String?  @unique
+  unit        String   // kg, pieces, liters, etc.
+  quantity    Float    @default(0)
+  minStock    Float    @default(0)
+  products    Product[]
+  logs        StockLog[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model StockLog {
+  id              String        @id @default(uuid())
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  change          Float
+  previousStock   Float
+  newStock        Float
+  reason          String?       // RESTOCK, CONSUMPTION, SPOILAGE, ADJUSTMENT
+  createdAt       DateTime      @default(now())
+}
+
+model Order {
+  id          String      @id @default(uuid())
+  tableNumber String?
+  status      String      @default("PENDING") // PENDING, ACCEPTED, PREPARING, READY, COMPLETED, CANCELLED
+  totalAmount Float
+  items       OrderItem[]
+  kots        KOT[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model KOT {
+  id              String            @id @default(uuid())
+  orderId         String
+  order           Order             @relation(fields: [orderId], references: [id])
+  stationId       String
+  station         ProductionStation @relation(fields: [stationId], references: [id])
+  status          String            @default("PENDING") // PENDING, PREPARING, READY, COMPLETED
+  items           OrderItem[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+}
+
+model OrderItem {
+  id          String            @id @default(uuid())
+  orderId     String
+  order       Order             @relation(fields: [orderId], references: [id])
+  productId   String
+  product     Product           @relation(fields: [productId], references: [id])
+  stationId   String
+  station     ProductionStation @relation(fields: [stationId], references: [id])
+  kotId       String?
+  kot         KOT?              @relation(fields: [kotId], references: [id])
+  quantity    Int
+  price       Float             // Snapshotted price at time of order
+  status      String            @default("PENDING") // PENDING, PREPARING, READY, SERVED
+  createdAt   DateTime          @default(now())
+}

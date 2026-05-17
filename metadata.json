@@ -1,0 +1,6 @@
+{
+  "name": "QRMenu",
+  "description": "Cloud-based restaurant QR ordering and operations system with KOT routing, menu management, and sales analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
