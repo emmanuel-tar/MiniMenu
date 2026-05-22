@@ -20,6 +20,40 @@ interface AuthenticatedRequest extends Request {
   };
 }
 
+interface PrintableKotItem {
+  quantity: number;
+  productName: string;
+  notes?: string;
+}
+
+interface PrintableKot {
+  kotId: string;
+  orderId: string;
+  tableNumber: string;
+  stationName: string;
+  items: PrintableKotItem[];
+  createdAt: string;
+  printer: {
+    id: string;
+    name: string;
+    type: string; // BROWSER, NETWORK, PDF
+    ipAddress?: string;
+    port?: number;
+  };
+}
+
+interface ProductImport {
+  name: string;
+  description: string | null;
+  categoryName: string;
+  groupName: string;
+  stationName: string;
+  price: number;
+  sku: string | null;
+  barcode: string | null;
+  available: boolean;
+}
+
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
@@ -214,6 +248,321 @@ async function startServer() {
     res.json(created);
   });
 
+  // Printer Management
+  app.get("/api/settings/printers", authenticate, async (req, res) => {
+    const printers = await prisma.printer.findMany();
+    res.json(printers);
+  });
+
+  app.post("/api/settings/printers", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const company = await prisma.company.findFirst();
+    if (!company) return res.status(400).json({ error: "Company profile must be created first" });
+    
+    const printer = await prisma.printer.create({
+      data: { ...req.body, companyId: company.id }
+    });
+    res.json(printer);
+  });
+
+  // Receipt Settings
+  app.get("/api/settings/receipt", async (req, res) => {
+    const settings = await prisma.receiptSetting.findFirst();
+    res.json(settings || {});
+  });
+
+  app.post("/api/settings/receipt", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const company = await prisma.company.findFirst();
+    if (!company) return res.status(400).json({ error: "Company profile must be created first" });
+
+    const existing = await prisma.receiptSetting.findFirst();
+    if (existing) {
+      const updated = await prisma.receiptSetting.update({
+        where: { id: existing.id },
+        data: req.body
+      });
+      return res.json(updated);
+    }
+    const created = await prisma.receiptSetting.create({
+      data: { ...req.body, companyId: company.id }
+    });
+    res.json(created);
+  });
+
+  // Cashier Billing & Completion
+  app.post("/api/admin/orders/:id/pay", authenticate, async (req, res) => {
+    const { id } = req.params;
+    const { method, amount, reference } = req.body;
+
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const order = await tx.order.findUnique({ where: { id } });
+        if (!order) throw new Error("Order not found");
+
+        const payment = await tx.payment.create({
+          data: {
+            orderId: id,
+            method,
+            amount: amount || order.totalAmount,
+            reference
+          }
+        });
+
+        const updatedOrder = await tx.order.update({
+          where: { id },
+          data: { status: 'PAID' }
+        });
+
+        return { payment, order: updatedOrder };
+      });
+
+      io.emit("order-paid", { orderId: id, tableNumber: result.order.tableNumber });
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/admin/orders/:id/complete", authenticate, async (req, res) => {
+    const { id } = req.params;
+    try {
+      const order = await prisma.order.update({
+        where: { id },
+        data: { status: 'COMPLETED' }
+      });
+      io.emit("order-completed", id);
+      res.json(order);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to complete order" });
+    }
+  });
+
+  // Menu Export/Import
+  app.get("/api/menu/export", authenticate, async (req, res) => {
+    try {
+      const [categories, groups, stations, products] = await Promise.all([
+        prisma.category.findMany(),
+        prisma.productGroup.findMany(),
+        prisma.productionStation.findMany(),
+        prisma.product.findMany()
+      ]);
+      res.json({ categories, groups, stations, products });
+    } catch (error) {
+      res.status(500).json({ error: "Export failed" });
+    }
+  });
+
+  app.post("/api/menu/import", authenticate, async (req, res) => {
+    const { categories, groups, stations, products } = req.body;
+    
+    try {
+      await prisma.$transaction(async (tx) => {
+        // 1. Process Categories
+        const catMap = new Map();
+        for (const cat of categories) {
+          const upserted = await tx.category.upsert({
+            where: { id: cat.id },
+            update: { name: cat.name, description: cat.description },
+            create: { id: cat.id, name: cat.name, description: cat.description }
+          });
+          catMap.set(cat.name, upserted.id);
+        }
+
+        // 2. Process Groups
+        const groupMap = new Map();
+        for (const grp of groups) {
+          const upserted = await tx.productGroup.upsert({
+            where: { id: grp.id },
+            update: { name: grp.name },
+            create: { id: grp.id, name: grp.name }
+          });
+          groupMap.set(grp.name, upserted.id);
+        }
+
+        // 3. Process Stations
+        const stationMap = new Map();
+        for (const st of stations) {
+          const upserted = await tx.productionStation.upsert({
+            where: { id: st.id },
+            update: { name: st.name, description: st.description },
+            create: { id: st.id, name: st.name, description: st.description }
+          });
+          stationMap.set(st.name, upserted.id);
+        }
+
+        // 4. Process Products
+        for (const prod of products) {
+          // Strip relations and cost field not in schema
+          const { category, group, station, inventoryItem, cost, ...cleanProd } = prod;
+          
+          await tx.product.upsert({
+            where: { id: cleanProd.id },
+            update: {
+              ...cleanProd,
+              updatedAt: new Date()
+            },
+            create: {
+              ...cleanProd,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            }
+          });
+        }
+      });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Import error:", error);
+      res.status(500).json({ error: "Import failed during database transaction" });
+    }
+  });
+
+  app.post("/api/menu/import/csv", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+
+    const csvContent: string = req.body.csv;
+    if (!csvContent) return res.status(400).json({ error: "CSV content is required" });
+
+    const lines = csvContent.split('\n').filter(line => line.trim() !== '');
+    if (lines.length === 0) return res.status(400).json({ error: "Empty CSV content" });
+
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const productsToImport: ProductImport[] = [];
+    const errors: { row: number; message: string }[] = [];
+
+    // Expected headers for a basic import
+    const expectedHeaders = ["name", "description", "category", "group", "location", "price", "sku", "barcode", "available"];
+    const headerMap: { [key: string]: number } = {};
+    expectedHeaders.forEach(expHeader => {
+      const index = headers.indexOf(expHeader);
+      if (index !== -1) {
+        headerMap[expHeader] = index;
+      }
+    });
+
+    if (Object.keys(headerMap).length < expectedHeaders.length) {
+      return res.status(400).json({ error: `Missing required CSV headers. Expected: ${expectedHeaders.join(', ')}` });
+    }
+
+    for (let i = 1; i < lines.length; i++) {
+      const values = lines[i].split(',');
+      if (values.length !== headers.length) {
+        errors.push({ row: i + 1, message: `Row has incorrect number of columns. Expected ${headers.length}, got ${values.length}.` });
+        continue;
+      }
+
+      try {
+        const name = values[headerMap["name"]]?.trim();
+        const description = values[headerMap["description"]]?.trim();
+        const categoryName = values[headerMap["category"]]?.trim();
+        const groupName = values[headerMap["group"]]?.trim();
+        const stationName = values[headerMap["location"]]?.trim();
+        const price = parseFloat(values[headerMap["price"]]?.trim());
+        const sku = values[headerMap["sku"]]?.trim() || null;
+        const barcode = values[headerMap["barcode"]]?.trim() || null;
+        const available = values[headerMap["available"]]?.trim().toLowerCase() === 'yes';
+
+        if (!name || !categoryName || !groupName || !stationName || isNaN(price)) {
+          errors.push({ row: i + 1, message: "Missing required fields (Name, Category, Group, Location, Price) or invalid Price." });
+          continue;
+        }
+
+        productsToImport.push({
+          name, description, categoryName, groupName, stationName, price, sku, barcode, available
+        });
+      } catch (parseError: any) {
+        errors.push({ row: i + 1, message: `Parsing error: ${parseError.message}` });
+      }
+    }
+
+    if (errors.length > 0) {
+      return res.status(400).json({ error: "CSV parsing errors", details: errors });
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        for (const productData of productsToImport) {
+          // Find or create Category
+          const category = await tx.category.upsert({
+            where: { name: productData.categoryName },
+            update: {},
+            create: { name: productData.categoryName }
+          });
+
+          // Find or create ProductionStation
+          const station = await tx.productionStation.upsert({
+            where: { name: productData.stationName },
+            update: {},
+            create: { name: productData.stationName }
+          });
+
+          // Find or create ProductGroup, linking to station if not already linked
+          const group = await tx.productGroup.upsert({
+            where: { name: productData.groupName },
+            update: {
+              productionStationId: station.id // Ensure group is linked to station
+            },
+            create: {
+              name: productData.groupName,
+              productionStationId: station.id
+            }
+          });
+
+          // Upsert Product
+          await tx.product.upsert({
+            where: { name: productData.name },
+            update: {
+              name: productData.name,
+              description: productData.description,
+              price: productData.price,
+              available: productData.available,
+              categoryId: category.id,
+              groupId: group.id,
+              stationId: station.id,
+              barcode: productData.barcode,
+              updatedAt: new Date()
+            },
+            create: {
+              name: productData.name,
+              description: productData.description,
+              price: productData.price,
+              available: productData.available,
+              categoryId: category.id,
+              groupId: group.id,
+              stationId: station.id,
+              sku: productData.sku,
+              barcode: productData.barcode,
+            }
+          });
+        }
+      });
+      res.json({ success: true, message: "CSV import completed successfully." });
+    } catch (error) {
+      console.error("CSV Import error:", error);
+      res.status(500).json({ error: "Failed to import CSV data during database transaction", details: (error as Error).message });
+    }
+  });
+
+  app.delete("/api/menu/clear", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    
+    try {
+      await prisma.$transaction([
+        prisma.orderItem.deleteMany(),
+        prisma.kOT.deleteMany(),
+        prisma.order.deleteMany(),
+        prisma.product.deleteMany(),
+        prisma.productGroup.deleteMany(),
+        prisma.category.deleteMany(),
+      ]);
+      console.log(`[Menu] Bulk delete performed by user ${req.user.userId}`);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Clear menu error:", error);
+      res.status(500).json({ error: "Failed to clear menu data" });
+    }
+  });
+
   // Waiter Requests API
   app.get("/api/admin/waiter-calls", authenticate, (req, res) => {
     res.json(activeWaiterCalls);
@@ -260,12 +609,13 @@ async function startServer() {
     // We still allow `cost` in the payload for UI compatibility, and strip it out
     // to prevent Prisma validation errors.
     const data = req.body as any;
+    
+    // Strip fields not directly in the Product model or handled separately
+    const { cost, ...productData } = data;
 
-    // Remove unsupported fields before calling Prisma
-    delete data.cost;
-
+    // Use productData for Prisma create
     try {
-      const product = await prisma.product.create({ data });
+      const product = await prisma.product.create({ data: productData });
       res.json(product);
     } catch (error) {
       console.error(error);
@@ -273,18 +623,62 @@ async function startServer() {
     }
   });
 
+  app.patch("/api/menu/products/bulk-status", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const { ids, available } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: "No product IDs provided" });
+    }
+
+    try {
+      await prisma.product.updateMany({
+        where: { id: { in: ids } },
+        data: { available }
+      });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Bulk update failed" });
+    }
+  });
+
+  app.post("/api/menu/products/:id/clone", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    try {
+      const source = await prisma.product.findUnique({ where: { id } });
+      if (!source) return res.status(404).json({ error: "Product not found" });
+
+      // Destructure and omit fields that must be unique or fresh
+      const { id: _, createdAt, updatedAt, sku, barcode, ...rest } = source as any;
+
+      const cloned = await prisma.product.create({
+        data: {
+          ...rest,
+          name: `${source.name} (Copy)`,
+          sku: null,    // Clear unique fields to allow manual update later
+          barcode: null,
+          available: false, // Default to hidden so they can edit before publishing
+        },
+        include: { category: true, group: true, station: true }
+      });
+      res.json(cloned);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Failed to clone product" });
+    }
+  });
+
   app.put("/api/menu/products/:id", authenticate, async (req, res) => {
     const { id } = req.params;
     const data = req.body as any;
 
-    // Frontend sends `cost`, but Prisma model does not have a `cost` field.
-    // Strip it to prevent Prisma validation errors.
-    delete data.cost;
+    // Strip fields not directly in the Product model or handled separately
+    const { cost, ...productData } = data;
 
     try {
       const product = await prisma.product.update({
         where: { id },
-        data
+        data: productData
       });
       res.json(product);
     } catch (error) {
@@ -531,6 +925,55 @@ async function startServer() {
       res.json(kot);
     } catch (error) {
       res.status(500).json({ error: "Failed to update KOT status" });
+    }
+  });
+
+  app.post("/api/admin/kots/:id/reprint", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    try {
+      const kot = await prisma.kOT.findUnique({
+        where: { id },
+        include: {
+          station: { include: { printers: true } },
+          order: true,
+          items: true
+        }
+      });
+
+      if (!kot) return res.status(404).json({ error: "KOT not found" });
+
+      const stationPrinters = kot.station.printers.filter(p => 
+        p.active && (p.role === 'KITCHEN' || p.role === 'BAR' || p.role === 'GRILL' || p.role === 'SHISHA')
+      );
+
+      if (stationPrinters.length > 0) {
+        const targetPrinter = stationPrinters[0];
+        const printableKot: PrintableKot = {
+          kotId: kot.id,
+          orderId: kot.orderId,
+          tableNumber: kot.order.tableNumber || 'Walk-in',
+          stationName: kot.station.name,
+          items: kot.items.map(item => ({
+            quantity: item.quantity,
+            productName: item.productName
+          })),
+          createdAt: kot.createdAt.toISOString(),
+          printer: {
+            id: targetPrinter.id,
+            name: targetPrinter.name,
+            type: targetPrinter.type,
+            ipAddress: targetPrinter.ipAddress || undefined,
+            port: targetPrinter.port || undefined,
+          }
+        };
+
+        io.emit("print-kot", printableKot);
+        res.json({ success: true });
+      } else {
+        res.status(400).json({ error: "No active printer found for this station" });
+      }
+    } catch (error) {
+      res.status(500).json({ error: "Reprint failed" });
     }
   });
 

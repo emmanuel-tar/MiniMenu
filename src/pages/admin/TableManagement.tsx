@@ -25,7 +25,7 @@ import {
   TableRow 
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, LayoutGrid, QrCode, ExternalLink, Printer } from 'lucide-react';
+import { Plus, LayoutGrid, QrCode, ExternalLink, Printer, Download, Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -131,7 +131,7 @@ export default function TableManagement() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {tables.map((table) => (
+              {tables.map((table: any) => (
                 <TableRow key={table.id} className="border-slate-50 hover:bg-slate-50/50">
                   <TableCell className="font-bold text-slate-900">{table.name}</TableCell>
                   <TableCell>
@@ -152,7 +152,7 @@ export default function TableManagement() {
                       <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => openQrDialog(table)}>
                         <QrCode size={14} className="mr-1" /> View QR
                       </Button>
-                      <span className="truncate max-w-[150px]">{getQRLink(table.id)}</span>
+                      <span className="truncate max-w-37.5">{getQRLink(table.id)}</span>
                     </div>
                   </TableCell>
                   <TableCell className="text-right">

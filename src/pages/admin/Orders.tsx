@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, ChangeEvent } from 'react';
+import { io } from 'socket.io-client';
 
 import { 
   ClipboardList,
@@ -9,7 +10,8 @@ import {
   AlertCircle,
   Truck,
   Ban,
-  List
+  List,
+  Printer
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { 
@@ -18,9 +20,11 @@ import {
   TableCell, 
   TableHead, 
   TableHeader, 
-  TableRow 
+  TableRow,
+  TableFooter
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { 
@@ -31,6 +35,13 @@ import {
   SelectValue 
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { 
+  Dialog, 
+  DialogContent, 
+  DialogHeader, 
+  DialogTitle, 
+  DialogFooter 
+} from '@/components/ui/dialog';
 import { useAuth } from '@/src/hooks/useAuth';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -40,6 +51,7 @@ const STATUS_COLORS: Record<string, string> = {
   ACCEPTED: "bg-blue-100 text-blue-700 border-blue-200",
   PREPARING: "bg-indigo-100 text-indigo-700 border-indigo-200",
   READY: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  PAID: "bg-purple-100 text-purple-700 border-purple-200",
   COMPLETED: "bg-slate-100 text-slate-500 border-slate-200",
   CANCELLED: "bg-red-100 text-red-700 border-red-200",
 };
@@ -49,6 +61,7 @@ const STATUS_ICONS: Record<string, any> = {
   ACCEPTED: CheckCircle2,
   PREPARING: ChefHat,
   READY: AlertCircle,
+  PAID: CheckCircle2,
   COMPLETED: Truck,
   CANCELLED: Ban,
 };
@@ -63,6 +76,17 @@ export default function Orders() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [stationFilter, setStationFilter] = useState('ALL');
+  
+  const [selectedOrder, setSelectedOrder] = useState<any>(null);
+  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
+  // Persist socket connection
+  const socket = useMemo(() => io(), []);
+
+  const [isBillingOpen, setIsBillingOpen] = useState(false);
+  const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
+  const [orderToCancel, setOrderToCancel] = useState<any>(null);
+  const [paymentMethod, setPaymentMethod] = useState('CASH');
+  const [company, setCompany] = useState<any>(null);
 
   const fetchData = async () => {
     try {
@@ -72,6 +96,9 @@ export default function Orders() {
         fetch('/api/admin/kots', { headers: authHeader }),
         fetch('/api/stations', { headers: authHeader })
       ]);
+
+      const compRes = await fetch('/api/company');
+      if (compRes.ok) setCompany(await compRes.json());
 
       if (ordersRes.ok && kotsRes.ok && stationsRes.ok) {
         const ordersData = await ordersRes.json();
@@ -94,10 +121,101 @@ export default function Orders() {
   useEffect(() => {
     if (token) {
       fetchData();
+
+      // Audio notification for new kitchen orders
+      const orderSound = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+      orderSound.volume = 0.5;
+
+      socket.on("new-order-received", (order: any) => {
+        orderSound.play().catch(error => console.log("Audio playback failed (interaction required):", error));
+        toast.success(`🔔 New Order Received!`, {
+          description: `Table ${order.tableNumber} - $${(order.totalAmount || 0).toFixed(2)}`,
+        });
+        fetchData(); // Refresh list immediately to show the new order in Kitchen View
+      });
+
       const interval = setInterval(fetchData, 10000);
-      return () => clearInterval(interval);
+      return () => {
+        clearInterval(interval);
+        socket.off("new-order-received");
+      };
     }
-  }, [token]);
+  }, [token, socket]);
+
+  const handleCancelOrder = async () => {
+    if (!orderToCancel) return;
+    await updateStatus(orderToCancel.id, 'CANCELLED');
+    setIsCancelDialogOpen(false);
+    setOrderToCancel(null);
+  };
+
+  const handleProcessPayment = async () => {
+    try {
+      const res = await fetch(`/api/admin/orders/${selectedOrder.id}/pay`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify({ method: paymentMethod }),
+      });
+      if (res.ok) {
+        toast.success('Payment recorded');
+        setIsBillingOpen(false);
+        fetchData();
+      }
+    } catch (err) {
+      toast.error('Payment processing failed');
+    }
+  };
+
+  const handlePrintReceipt = (order: any) => {
+    const printWindow = window.open('', '_blank', 'width=400,height=600');
+    if (!printWindow) return;
+
+    const itemsHtml = order.items.map((i: any) => `
+      <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 4px;">
+        <span>${i.quantity}x ${i.productName}</span>
+        <span>$${(i.price * i.quantity).toFixed(2)}</span>
+      </div>
+    `).join('');
+
+    const showLogo = receiptSettings?.showLogo && company?.logo;
+    const footerText = receiptSettings?.footerText;
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <style>
+            body { font-family: monospace; padding: 20px; width: 300px; margin: 0 auto; color: #000; }
+            .header { text-align: center; margin-bottom: 15px; }
+            .logo { max-width: 120px; height: auto; margin-bottom: 10px; }
+            .items { margin: 10px 0; }
+            .total { display: flex; justify-content: space-between; font-weight: bold; margin-top: 10px; border-top: 1px dashed #000; padding-top: 10px; font-size: 16px; }
+            .footer { text-align: center; margin-top: 25px; font-size: 12px; border-top: 1px dashed #000; padding-top: 10px; }
+            hr { border: 0; border-top: 1px dashed #000; margin: 10px 0; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            ${showLogo ? `<img src="${company.logo}" class="logo" />` : ''}
+            <h2 style="margin: 0; font-size: 18px;">${company?.name || 'Restaurant'}</h2>
+            <p style="margin: 5px 0; font-size: 14px;">Table: ${order.tableNumber || 'Walk-in'}</p>
+            <p style="margin: 2px 0; font-size: 12px; opacity: 0.7;">Order: #${order.id.slice(0, 8)}</p>
+          </div>
+          <hr/>
+          <div class="items">${itemsHtml}</div>
+          <div class="total">
+            <span>Total</span>
+            <span>$${order.totalAmount.toFixed(2)}</span>
+          </div>
+          <div class="footer">${footerText || 'Thank you for dining with us!'}</div>
+          <script>window.onload = () => { window.print(); setTimeout(() => window.close(), 100); };</script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
 
   const updateStatus = async (orderId: string, newStatus: string) => {
     try {
@@ -134,6 +252,35 @@ export default function Orders() {
       }
     } catch (err) {
       toast.error('Failed to update KOT status');
+    }
+  };
+
+  const toggleOrderExpansion = (orderId: string) => {
+    setExpandedOrders(prev => {
+      const next = new Set(prev);
+      if (next.has(orderId)) {
+        next.delete(orderId);
+      } else {
+        next.add(orderId);
+      }
+      return next;
+    });
+  };
+
+  const handleReprintKot = async (kotId: string) => {
+    try {
+      const res = await fetch(`/api/admin/kots/${kotId}/reprint`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        toast.success('Reprint request sent');
+      } else {
+        const err = await res.json();
+        toast.error(err.error || 'Reprint failed');
+      }
+    } catch (err) {
+      toast.error('Connection error');
     }
   };
 
@@ -189,8 +336,8 @@ export default function Orders() {
             </div>
             
             {activeTab === 'all' ? (
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-40 rounded-xl border-slate-200 bg-white">
+              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v || 'ALL')}>
+                <SelectTrigger className="w-40 rounded-xl border-slate-200 bg-white"> {/* This is the line at 351:44 */}
                   <SelectValue placeholder="Filter Status" />
                 </SelectTrigger>
                 <SelectContent>
@@ -199,12 +346,13 @@ export default function Orders() {
                   <SelectItem value="ACCEPTED">Accepted</SelectItem>
                   <SelectItem value="PREPARING">Preparing</SelectItem>
                   <SelectItem value="READY">Ready</SelectItem>
+                  <SelectItem value="PAID">Paid</SelectItem>
                   <SelectItem value="COMPLETED">Completed</SelectItem>
                   <SelectItem value="CANCELLED">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
             ) : (
-              <Select value={stationFilter} onValueChange={setStationFilter}>
+              <Select value={stationFilter} onValueChange={(v) => setStationFilter(v || 'ALL')}> {/* Handle null explicitly */}
                 <SelectTrigger className="w-40 rounded-xl border-slate-200 bg-white">
                   <SelectValue placeholder="Station" />
                 </SelectTrigger>
@@ -231,10 +379,11 @@ export default function Orders() {
                     <TableHead className="font-semibold text-slate-600">Items</TableHead>
                     <TableHead className="font-semibold text-slate-600">Time</TableHead>
                     <TableHead className="font-semibold text-slate-600 text-right">Total</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredOrders.map((order) => (
+                  {filteredOrders.map((order: any) => (
                     <TableRow key={order.id} className="border-slate-50 hover:bg-slate-50/50 transition-colors">
                       <TableCell>
                         <span className="font-bold text-slate-900 leading-none">#{order.id.slice(0, 5)}</span>
@@ -257,6 +406,7 @@ export default function Orders() {
                             <SelectItem value="ACCEPTED">Accepted</SelectItem>
                             <SelectItem value="PREPARING">Preparing</SelectItem>
                             <SelectItem value="READY">Ready</SelectItem>
+                            <SelectItem value="PAID">Paid</SelectItem>
                             <SelectItem value="COMPLETED">Completed</SelectItem>
                             <SelectItem value="CANCELLED">Cancelled</SelectItem>
                           </SelectContent>
@@ -264,16 +414,34 @@ export default function Orders() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">
-                          {order.items?.slice(0, 2).map((item: any) => (
-
-                            <span key={item.id} className="text-xs text-slate-600 block">
-                              {item.quantity}x {item.productName}
-                            </span>
+                          {(expandedOrders.has(order.id) ? order.items : order.items?.slice(0, 5))?.map((item: any) => (
+                            <div key={item.id} className="flex items-center justify-between group/item gap-2">
+                              <span className="text-xs text-slate-600 truncate">
+                                {item.quantity}x {item.productName}
+                              </span>
+                              {item.kotId && (
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  className="h-5 w-5 opacity-0 group-hover/item:opacity-100 transition-opacity hover:bg-slate-100 rounded-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleReprintKot(item.kotId);
+                                  }}
+                                  title="Reprint KOT"
+                                >
+                                  <Printer size={10} />
+                                </Button>
+                              )}
+                            </div>
                           ))}
-                          {order.items.length > 2 && (
-                            <span className="text-[10px] text-slate-400 font-medium italic">
-                              + {order.items.length - 2} more items
-                            </span>
+                          {order.items.length > 5 && (
+                            <button 
+                              className="text-[10px] text-slate-400 font-medium italic hover:text-slate-600 transition-colors w-fit text-left outline-none"
+                              onClick={() => toggleOrderExpansion(order.id)}
+                            >
+                              {expandedOrders.has(order.id) ? "Show less" : `+ ${order.items.length - 5} more items`}
+                            </button>
                           )}
                         </div>
                       </TableCell>
@@ -282,6 +450,37 @@ export default function Orders() {
                       </TableCell>
                       <TableCell className="text-right font-bold text-slate-900">
                         ${order.totalAmount.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
+                          {order.status === 'READY' && (
+                            <Button 
+                              size="sm" 
+                              className="h-8 rounded-lg bg-slate-900 text-[10px] font-bold"
+                              onClick={() => { setSelectedOrder(order); setIsBillingOpen(true); }}
+                            >
+                              Bill Order
+                            </Button>
+                          )}
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            className="h-8 w-8"
+                            onClick={() => handlePrintReceipt(order)}
+                          >
+                            <Printer size={14} />
+                          </Button>
+                          {!['CANCELLED', 'COMPLETED', 'PAID'].includes(order.status) && (
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              className="h-8 w-8 text-rose-500 hover:text-rose-600 hover:bg-rose-50"
+                              onClick={() => { setOrderToCancel(order); setIsCancelDialogOpen(true); }}
+                            >
+                              <Ban size={14} />
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -303,7 +502,7 @@ export default function Orders() {
 
         <TabsContent value="kitchen" className="mt-0">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {filteredKots.map((kot) => {
+            {filteredKots.map((kot: any) => {
               const Icon = STATUS_ICONS[kot.status] || Clock;
               return (
                 <Card key={kot.id} className={cn(
@@ -383,6 +582,15 @@ export default function Orders() {
                           Served
                         </Button>
                       )}
+                      <Button 
+                        variant="outline"
+                        size="icon"
+                        className="rounded-xl border-slate-200 shrink-0 h-10 w-10"
+                        onClick={() => handleReprintKot(kot.id)}
+                        title="Reprint Ticket"
+                      >
+                        <Printer size={16} />
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -400,6 +608,80 @@ export default function Orders() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Billing / Checkout Modal */}
+      <Dialog open={isBillingOpen} onOpenChange={setIsBillingOpen}>
+        <DialogContent className="rounded-3xl border-none max-w-md shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-2xl font-bold text-slate-900">Complete Payment</DialogTitle>
+            <CardDescription className="text-slate-500">
+              Processing order <span className="font-mono font-bold text-slate-900">#{selectedOrder?.id?.slice(0, 5)}</span> for <span className="font-bold text-slate-900">Table {selectedOrder?.tableNumber || 'WALK-IN'}</span>
+            </CardDescription>
+          </DialogHeader>
+          
+          <div className="space-y-6 py-6">
+            <div className="bg-slate-900 text-white p-6 rounded-2xl flex justify-between items-center">
+              <div>
+                <p className="text-xs uppercase font-bold opacity-60">Total Amount Due</p>
+                <p className="text-3xl font-bold">${(selectedOrder?.totalAmount || 0).toFixed(2)}</p>
+              </div>
+              <div className="bg-white/10 p-3 rounded-xl">
+                <Printer size={24} />
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <Label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Select Payment Method</Label>
+              <div className="grid grid-cols-2 gap-3">
+                {['CASH', 'POS', 'TRANSFER', 'ONLINE'].map((method) => (
+                  <Button
+                    key={method}
+                    variant={paymentMethod === method ? 'default' : 'outline'}
+                    className={cn(
+                      "rounded-xl h-14 font-bold border-slate-200",
+                      paymentMethod === method ? "bg-slate-900 shadow-lg shadow-slate-900/20" : "hover:bg-slate-50"
+                    )}
+                    onClick={() => setPaymentMethod(method)}
+                  >
+                    {method}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button onClick={handleProcessPayment} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white h-14 rounded-2xl font-bold text-lg shadow-lg shadow-emerald-600/20">
+              Confirm Payment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel Order Confirmation */}
+      <Dialog open={isCancelDialogOpen} onOpenChange={setIsCancelDialogOpen}>
+        <DialogContent className="rounded-3xl border-none max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold text-slate-900">Cancel Order?</DialogTitle>
+            <CardDescription>
+              Are you sure you want to cancel order <span className="font-mono font-bold text-slate-900">#{orderToCancel?.id?.slice(0, 5)}</span>? 
+              This action will notify the kitchen and is generally irreversible.
+            </CardDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 pt-4">
+            <Button 
+              variant="destructive" 
+              className="rounded-xl bg-red-600 hover:bg-red-700 h-12 font-bold"
+              onClick={handleCancelOrder}
+            >
+              Yes, Cancel Order
+            </Button>
+            <Button variant="ghost" className="rounded-xl h-12" onClick={() => setIsCancelDialogOpen(false)}>
+              Keep Order
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

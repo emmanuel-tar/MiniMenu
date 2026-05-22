@@ -11,6 +11,7 @@ import Orders from './pages/admin/Orders';
 import TableManagement from './pages/admin/TableManagement';
 import CustomerMenu from './pages/customer/CustomerMenu';
 import OrderStatus from './pages/customer/OrderStatus';
+import KOTPrinter from './pages/admin/KOTPrinter';
 import { Toaster } from '@/components/ui/sonner';
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -53,6 +54,7 @@ export default function App() {
         </Routes>
       </BrowserRouter>
       <Toaster />
+      <KOTPrinter /> {/* Render the KOTPrinter component */}
     </AuthProvider>
   );
 }

@@ -29,41 +29,83 @@ model Company {
   phone        String?
   address      String?
   updatedAt    DateTime @updatedAt
+  receiptSettings ReceiptSetting?
+  printers       Printer[]
 }
 
 model Category {
   id          String    @id @default(uuid())
-  name        String
+  name        String    @unique
   description String?
+  image       String?
+  active      Boolean   @default(true)
+  sortOrder   Int       @default(0)
   createdAt   DateTime  @default(now())
   products    Product[]
 }
 
 model ProductGroup {
-  id        String    @id @default(uuid())
-  name      String
-  createdAt DateTime  @default(now())
-  products  Product[]
+  id                  String            @id @default(uuid())
+  name                String            @unique
+  description         String?
+  productionStationId String?
+  active              Boolean           @default(true)
+  createdAt           DateTime          @default(now())
+  products            Product[]
+  productionStation   ProductionStation? @relation(fields: [productionStationId], references: [id])
 }
 
 model ProductionStation {
-  id          String      @id @default(uuid())
-  name        String
+  id          String       @id @default(uuid())
+  name        String       @unique
+  code        String?      @unique
   description String?
-  createdAt   DateTime    @default(now())
+  printerName String?
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
   kots        KOT[]
   orderItems  OrderItem[]
   products    Product[]
   users       User[]
+  productGroups ProductGroup[]
+  printers    Printer[]
+}
+
+model Printer {
+  id          String            @id @default(uuid())
+  name        String
+  type        String            @default("BROWSER") // BROWSER, NETWORK, PDF
+  ipAddress   String?
+  port        Int?
+  stationId   String?
+  role        String            @default("CASHIER") // CASHIER, KITCHEN, BAR
+  active      Boolean           @default(true)
+  companyId   String
+  createdAt   DateTime          @default(now())
+  company     Company           @relation(fields: [companyId], references: [id])
+  station     ProductionStation? @relation(fields: [stationId], references: [id])
+}
+
+model ReceiptSetting {
+  id         String   @id @default(uuid())
+  companyId  String   @unique
+  showLogo   Boolean  @default(true)
+  footerText String?
+  showTax    Boolean  @default(true)
+  paperSize  String   @default("80mm")
+  autoPrint  Boolean  @default(false)
+  company    Company  @relation(fields: [companyId], references: [id])
 }
 
 model Product {
   id              String            @id @default(uuid())
-  name            String
+  name            String            @unique
   description     String?
   price           Float
   image           String?
   available       Boolean           @default(true)
+  sku             String?           @unique
+  barcode         String?           @unique
   categoryId      String
   groupId         String
   stationId       String
@@ -102,6 +144,17 @@ model StockLog {
   inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
 }
 
+model Payment {
+  id            String   @id @default(uuid())
+  orderId       String   @unique
+  method        String   // CASH, POS, TRANSFER, CARD
+  amount        Float
+  status        String   @default("SUCCESS")
+  reference     String?
+  paidAt        DateTime @default(now())
+  order         Order    @relation(fields: [orderId], references: [id])
+}
+
 model Table {
   id        String   @id @default(uuid())
   name      String
@@ -122,6 +175,7 @@ model Order {
   updatedAt   DateTime    @updatedAt
   kots        KOT[]
   items       OrderItem[]
+  payment     Payment?
   table       Table?      @relation(fields: [tableId], references: [id])
 }
 
