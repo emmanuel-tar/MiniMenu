@@ -4,138 +4,152 @@ generator client {
 
 datasource db {
   provider = "sqlite"
+  url      = env("DATABASE_URL")
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
+  id        String             @id @default(uuid())
+  email     String             @unique
   password  String
   name      String
-  role      String   // ADMIN, MANAGER, CASHIER, KITCHEN
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  role      String
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
   stationId String?
   station   ProductionStation? @relation(fields: [stationId], references: [id])
 }
 
 model Company {
-  id            String   @id @default(uuid())
-  name          String
-  logo          String?
-  currency      String   @default("USD")
-  taxRate       Float    @default(0)
-  contactEmail  String?
-  phone         String?
-  address       String?
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(uuid())
+  name         String
+  logo         String?
+  currency     String   @default("USD")
+  taxRate      Float    @default(0)
+  contactEmail String?
+  phone        String?
+  address      String?
+  updatedAt    DateTime @updatedAt
 }
 
 model Category {
   id          String    @id @default(uuid())
   name        String
   description String?
-  products    Product[]
   createdAt   DateTime  @default(now())
+  products    Product[]
 }
 
 model ProductGroup {
-  id          String    @id @default(uuid())
-  name        String
-  products    Product[]
-  createdAt   DateTime  @default(now())
+  id        String    @id @default(uuid())
+  name      String
+  createdAt DateTime  @default(now())
+  products  Product[]
 }
 
 model ProductionStation {
-  id          String    @id @default(uuid())
-  name        String    // Kitchen, Bar, Grill, etc.
+  id          String      @id @default(uuid())
+  name        String
   description String?
-  users       User[]
-  products    Product[]
-  orderItems  OrderItem[]
+  createdAt   DateTime    @default(now())
   kots        KOT[]
-  createdAt   DateTime  @default(now())
+  orderItems  OrderItem[]
+  products    Product[]
+  users       User[]
 }
 
 model Product {
-  id          String    @id @default(uuid())
-  name        String
-  description String?
-  price       Float
-  image       String?
-  available   Boolean   @default(true)
-  categoryId  String
-  category    Category  @relation(fields: [categoryId], references: [id])
-  groupId     String
-  group       ProductGroup @relation(fields: [groupId], references: [id])
-  stationId   String
-  station     ProductionStation @relation(fields: [stationId], references: [id])
+  id              String            @id @default(uuid())
+  name            String
+  description     String?
+  price           Float
+  image           String?
+  available       Boolean           @default(true)
+  categoryId      String
+  groupId         String
+  stationId       String
   inventoryItemId String?
-  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id])
-  orderItems  OrderItem[]
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  orderItems      OrderItem[]
+  inventoryItem   InventoryItem?    @relation(fields: [inventoryItemId], references: [id])
+  station         ProductionStation @relation(fields: [stationId], references: [id])
+  group           ProductGroup      @relation(fields: [groupId], references: [id])
+  category        Category          @relation(fields: [categoryId], references: [id])
 }
 
 model InventoryItem {
-  id          String   @id @default(uuid())
+  id          String     @id @default(uuid())
   name        String
   description String?
-  sku         String?  @unique
-  unit        String   // kg, pieces, liters, etc.
-  quantity    Float    @default(0)
-  minStock    Float    @default(0)
+  sku         String?    @unique
+  unit        String
+  quantity    Float      @default(0)
+  minStock    Float      @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
   products    Product[]
   logs        StockLog[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
 }
 
 model StockLog {
   id              String        @id @default(uuid())
   inventoryItemId String
-  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
   change          Float
   previousStock   Float
   newStock        Float
-  reason          String?       // RESTOCK, CONSUMPTION, SPOILAGE, ADJUSTMENT
+  reason          String?
   createdAt       DateTime      @default(now())
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+}
+
+model Table {
+  id        String   @id @default(uuid())
+  name      String
+  status    String   @default("AVAILABLE")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  orders    Order[]
 }
 
 model Order {
   id          String      @id @default(uuid())
+  tableId     String?
   tableNumber String?
-  status      String      @default("PENDING") // PENDING, ACCEPTED, PREPARING, READY, COMPLETED, CANCELLED
+  status      String      @default("PENDING")
   totalAmount Float
-  items       OrderItem[]
-  kots        KOT[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
+  kots        KOT[]
+  items       OrderItem[]
+  table       Table?      @relation(fields: [tableId], references: [id])
 }
 
 model KOT {
-  id              String            @id @default(uuid())
-  orderId         String
-  order           Order             @relation(fields: [orderId], references: [id])
-  stationId       String
-  station         ProductionStation @relation(fields: [stationId], references: [id])
-  status          String            @default("PENDING") // PENDING, PREPARING, READY, COMPLETED
-  items           OrderItem[]
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  id        String            @id @default(uuid())
+  orderId   String
+  stationId String
+  status    String            @default("PENDING")
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  station   ProductionStation @relation(fields: [stationId], references: [id])
+  order     Order             @relation(fields: [orderId], references: [id])
+  items     OrderItem[]
 }
 
 model OrderItem {
   id          String            @id @default(uuid())
   orderId     String
-  order       Order             @relation(fields: [orderId], references: [id])
   productId   String
-  product     Product           @relation(fields: [productId], references: [id])
   stationId   String
-  station     ProductionStation @relation(fields: [stationId], references: [id])
   kotId       String?
-  kot         KOT?              @relation(fields: [kotId], references: [id])
   quantity    Int
-  price       Float             // Snapshotted price at time of order
-  status      String            @default("PENDING") // PENDING, PREPARING, READY, SERVED
+  productName String
+  price       Float
+  status      String            @default("PENDING")
   createdAt   DateTime          @default(now())
+  kot         KOT?              @relation(fields: [kotId], references: [id])
+  station     ProductionStation @relation(fields: [stationId], references: [id])
+  product     Product           @relation(fields: [productId], references: [id])
+  order       Order             @relation(fields: [orderId], references: [id])
 }

@@ -150,6 +150,17 @@ export default function Settings() {
                 />
               </div>
             </div>
+            <div className="space-y-2">
+              <Label>Contact Phone</Label>
+              <div className="relative">
+                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <Input 
+                  value={company.phone} 
+                  onChange={e => setCompany({...company, phone: e.target.value})} 
+                  className="pl-10 rounded-xl border-slate-200"
+                />
+              </div>
+            </div>
             <div className="space-y-2 md:col-span-2">
               <Label>Address</Label>
               <div className="relative">

@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import { 
   LayoutDashboard, 
   UtensilsCrossed, 
@@ -8,19 +9,39 @@ import {
   ChevronRight,
   Menu,
   ClipboardList,
-  Package
+  Package,
+  LayoutGrid
 } from 'lucide-react';
 import { useAuth } from '@/src/hooks/useAuth';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
   const location = useLocation();
 
+  useEffect(() => {
+    const socket = io();
+    
+    // Initialize the notification sound (Bell ring)
+    const bellSound = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+    bellSound.volume = 0.5;
+    
+    socket.on('waiter-requested', (data) => {
+      bellSound.play().catch(error => console.log("Audio playback failed:", error));
+      toast.info(`🔔 Waiter requested at ${data.tableName}`, {
+        duration: 8000,
+      });
+    });
+
+    return () => { socket.disconnect(); };
+  }, []);
+
   const menuItems = [
     { name: 'Dashboard', path: '/admin', icon: LayoutDashboard },
     { name: 'Orders', path: '/admin/orders', icon: ClipboardList },
+    { name: 'Table Management', path: '/admin/tables', icon: LayoutGrid },
     { name: 'Menu', path: '/admin/menu', icon: UtensilsCrossed },
     { name: 'Inventory', path: '/admin/inventory', icon: Package },
     { name: 'Settings', path: '/admin/settings', icon: SettingsIcon },
@@ -80,8 +101,16 @@ export default function AdminLayout() {
           <div className="flex items-center gap-2">
             <span className="text-slate-400">Pages</span>
             <ChevronRight size={14} className="text-slate-300" />
-            <span className="text-sm font-medium text-slate-900 capitalize">
-              {location.pathname.split('/').pop() || 'Dashboard'}
+            <span className="text-sm font-medium text-slate-900">
+              {menuItems.find(item => 
+                 // Exact match for non-index routes, or base path for index
+                 item.path === location.pathname || 
+                 (item.path === '/admin' && location.pathname === '/admin')
+               )?.name || 
+               // Fallback for dynamic routes like /menu/:tableId or unmatched
+               location.pathname.split('/').pop()?.replace(/-/g, ' ')
+                 .split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') || 
+               'Dashboard'}
             </span>
           </div>
         </header>

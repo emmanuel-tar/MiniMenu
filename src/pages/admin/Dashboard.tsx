@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
+import { io } from 'socket.io-client';
 import { 
   Users, 
   ShoppingBag, 
@@ -6,9 +7,23 @@ import {
   Clock,
   ArrowUpRight,
   ArrowDownRight,
-  MoreHorizontal
+  MoreHorizontal,
+  Bell,
+  Check,
+  History,
+  Timer,
+  Trash2
 } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { 
+  Dialog, 
+  DialogContent, 
+  DialogHeader, 
+  DialogTitle, 
+  DialogTrigger,
+  DialogFooter 
+} from '@/components/ui/dialog';
 import { 
   Table, 
   TableBody, 
@@ -38,6 +53,25 @@ export default function Dashboard() {
     totalProducts: 0
   });
   const [recentOrders, setRecentOrders] = useState([]);
+  const [waiterCalls, setWaiterCalls] = useState<any[]>([]);
+  const [handledCalls, setHandledCalls] = useState<any[]>([]);
+  const [isClearHistoryOpen, setIsClearHistoryOpen] = useState(false);
+
+  // Persist socket connection
+  const socket = useMemo(() => io(), []);
+
+  const avgResponseTime = useMemo(() => {
+    if (handledCalls.length === 0) return '0s';
+    const totalMs = handledCalls.reduce((acc: number, call: any) => {
+      const start = new Date(call.createdAt).getTime();
+      const end = new Date(call.handledAt).getTime();
+      return acc + (end - start);
+    }, 0);
+    const avgMs = totalMs / handledCalls.length;
+    const mins = Math.floor(avgMs / 60000);
+    const secs = Math.floor((avgMs % 60000) / 1000);
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  }, [handledCalls]);
 
   const fetchData = async () => {
     try {
@@ -67,11 +101,63 @@ export default function Dashboard() {
     }
   };
 
+  const fetchWaiterCalls = async () => {
+    try {
+      const res = await fetch('/api/admin/waiter-calls', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) setWaiterCalls(await res.json());
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchHandledCalls = async () => {
+    try {
+      const res = await fetch('/api/admin/waiter-calls/history', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) setHandledCalls(await res.json());
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   useEffect(() => {
     fetchData();
+    fetchWaiterCalls();
+    fetchHandledCalls();
+
+    socket.on("waiter-requested", (call: any) => {
+      setWaiterCalls(prev => [...prev, call]);
+    });
+
+    socket.on("waiter-call-dismissed", (id: string) => {
+      setWaiterCalls((prev: any[]) => prev.filter((c: any) => c.id !== id));
+    });
+
+    socket.on("waiter-call-handled", (call: any) => {
+      setHandledCalls((prev: any[]) => [call, ...prev].slice(0, 10));
+    });
+
+    socket.on("waiter-history-cleared", () => {
+      setHandledCalls([]);
+    });
+
+    socket.on("new-order-received", (order: any) => {
+      fetchData(); // Immediate refresh of stats and recent orders table
+      toast.success(`🔔 New Order! Table ${order.tableNumber} - $${order.totalAmount.toFixed(2)}`, {
+        description: `Order #${order.id.slice(0, 5)}`,
+        duration: 5000,
+      });
+    });
+
+    socket.on("order-status-updated", () => fetchData());
+
     const interval = setInterval(fetchData, 10000); // Poll every 10s
+
     return () => clearInterval(interval);
-  }, [token]);
+  }, [token, socket]);
 
   const updateOrderStatus = async (orderId: string, newStatus: string) => {
     try {
@@ -94,18 +180,120 @@ export default function Dashboard() {
     }
   };
 
-  const cards = [
-    { title: 'Total Sales', value: `$${stats.totalSales.toFixed(2)}`, icon: TrendingUp, delta: '+12.5%', color: 'text-emerald-600', bg: 'bg-emerald-50' },
-    { title: 'Active Orders', value: stats.activeOrders.toString(), icon: ShoppingBag, delta: '+2', color: 'text-blue-600', bg: 'bg-blue-50' },
-    { title: 'Pending Orders', value: stats.pendingOrders.toString(), icon: Clock, delta: '-1', color: 'text-amber-600', bg: 'bg-amber-50' },
-    { title: 'Total Products', value: stats.totalProducts.toString(), icon: Users, delta: '0', color: 'text-indigo-600', bg: 'bg-indigo-50' },
-  ];
+  const dismissWaiterCall = (id: string) => {
+    socket.emit("dismiss-waiter-call", id);
+    toast.success("Waiter request handled");
+  };
+
+  const clearHistory = () => {
+    socket.emit("clear-waiter-history");
+    toast.success("Waiter history cleared");
+    setIsClearHistoryOpen(false);
+  };
 
   return (
     <div className="space-y-8">
+      {/* Active Waiter Requests */}
+      {waiterCalls.length > 0 && (
+        <div className="space-y-4">
+          <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2 px-1">
+            <Bell className="text-amber-500 animate-bounce" size={20} />
+            Attention Required ({waiterCalls.length})
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {waiterCalls.map((call) => (
+              <Card key={call.id} className="border-none shadow-md bg-amber-50/50 border-l-4 border-amber-400">
+                <CardContent className="p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center text-amber-600">
+                      <Bell size={20} />
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-900">{call.tableName}</p>
+                      <p className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">
+                        Requested {new Date(call.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                  </div>
+                  <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full hover:bg-emerald-100 hover:text-emerald-600" onClick={() => dismissWaiterCall(call.id)}>
+                    <Check size={18} />
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Handled Waiter Requests History */}
+      {handledCalls.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+              <History className="text-slate-400" size={20} />
+              Recently Handled
+            </h3>
+            <Dialog open={isClearHistoryOpen} onOpenChange={setIsClearHistoryOpen}>
+              <DialogTrigger asChild>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  className="text-xs text-slate-500 hover:text-red-500 hover:bg-red-50 rounded-lg flex items-center gap-2"
+                >
+                  <Trash2 size={14} />
+                  Clear History
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="rounded-2xl border-none max-w-sm">
+                <DialogHeader>
+                  <DialogTitle>Clear History</DialogTitle>
+                  <CardDescription>Are you sure you want to clear the recently handled waiter requests? This action cannot be undone.</CardDescription>
+                </DialogHeader>
+                <DialogFooter className="gap-2 sm:gap-0 pt-4">
+                  <Button variant="ghost" onClick={() => setIsClearHistoryOpen(false)} className="rounded-xl">Cancel</Button>
+                  <Button variant="destructive" onClick={clearHistory} className="rounded-xl bg-red-500 hover:bg-red-600 text-white">
+                    Clear Everything
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {handledCalls.map((call) => (
+              <Card key={call.id} className="border-none shadow-sm bg-white border-l-4 border-slate-200 opacity-70">
+                <CardContent className="p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center text-slate-400">
+                      <Check size={20} />
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-700">{call.tableName}</p>
+                      <div className="flex flex-col">
+                        <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">
+                          Requested {new Date(call.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                        <p className="text-[10px] text-emerald-500 font-bold uppercase tracking-wider">
+                          Handled {new Date(call.handledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {cards.map((card) => (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+        {React.useMemo(() => [
+          { title: 'Total Sales', value: `$${stats.totalSales.toFixed(2)}`, icon: TrendingUp, delta: '+12.5%', color: 'text-emerald-600', bg: 'bg-emerald-50' },
+          { title: 'Active Orders', value: stats.activeOrders.toString(), icon: ShoppingBag, delta: '+2', color: 'text-blue-600', bg: 'bg-blue-50' },
+          { title: 'Pending Orders', value: stats.pendingOrders.toString(), icon: Clock, delta: '-1', color: 'text-amber-600', bg: 'bg-amber-50' },
+          { title: 'Avg Response', value: avgResponseTime, icon: Timer, delta: '-12%', color: 'text-rose-600', bg: 'bg-rose-50' },
+          { title: 'Total Products', value: stats.totalProducts.toString(), icon: Users, delta: '0', color: 'text-indigo-600', bg: 'bg-indigo-50' },
+        ], [stats, avgResponseTime]).map((card) => (
           <Card key={card.title} className="border-none shadow-sm hover:shadow-md transition-shadow duration-300">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-slate-500">{card.title}</CardTitle>

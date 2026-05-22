@@ -1,16 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, ChangeEvent } from 'react';
+
 import { 
-  ClipboardList, 
-  Search, 
-  Filter, 
-  ChefHat, 
-  Clock, 
-  CheckCircle2, 
+  ClipboardList,
+  Search,
+  ChefHat,
+  Clock,
+  CheckCircle2,
   AlertCircle,
   Truck,
   Ban,
-  MoreVertical,
-  LayoutGrid,
   List
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -139,18 +137,22 @@ export default function Orders() {
     }
   };
 
-  const filteredOrders = orders.filter(order => {
-    const matchesSearch = order.id.toLowerCase().includes(search.toLowerCase()) || 
-                         order.tableNumber?.toLowerCase().includes(search.toLowerCase());
-    const matchesStatus = statusFilter === 'ALL' || order.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  const filteredOrders = useMemo(() => {
+    return orders.filter((order: any) => {
+      const matchesSearch = order.id.toLowerCase().includes(search.toLowerCase()) || 
+                           order.tableNumber?.toLowerCase().includes(search.toLowerCase());
+      const matchesStatus = statusFilter === 'ALL' || order.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [orders, search, statusFilter]);
 
-  const filteredKots = kots.filter(kot => {
-    const matchesStation = stationFilter === 'ALL' || kot.stationId === stationFilter;
-    const isActive = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY'].includes(kot.status);
-    return matchesStation && isActive;
-  });
+  const filteredKots = useMemo(() => {
+    return kots.filter((kot: any) => {
+      const matchesStation = stationFilter === 'ALL' || kot.stationId === stationFilter;
+      const isActive = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY'].includes(kot.status);
+      return matchesStation && isActive;
+    });
+  }, [kots, stationFilter]);
 
   return (
     <div className="space-y-8 pb-12">
@@ -262,9 +264,10 @@ export default function Orders() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">
-                          {order.items.slice(0, 2).map((item: any) => (
+                          {order.items?.slice(0, 2).map((item: any) => (
+
                             <span key={item.id} className="text-xs text-slate-600 block">
-                              {item.quantity}x {item.product.name}
+                              {item.quantity}x {item.productName}
                             </span>
                           ))}
                           {order.items.length > 2 && (
@@ -340,7 +343,7 @@ export default function Orders() {
                           </div>
                           <div className="flex-1">
                             <p className="text-sm font-semibold text-slate-800 leading-tight">
-                              {item.product.name}
+                              {item.productName}
                             </p>
                           </div>
                         </div>
@@ -395,87 +398,6 @@ export default function Orders() {
               </div>
             )}
           </div>
-        </TabsContent>
-
-        <TabsContent value="all" className="mt-0">
-          <Card className="rounded-3xl border-none shadow-sm overflow-hidden">
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader className="bg-slate-50/50">
-                  <TableRow className="border-slate-100 hover:bg-transparent">
-                    <TableHead className="font-semibold text-slate-600">Order</TableHead>
-                    <TableHead className="font-semibold text-slate-600">Table</TableHead>
-                    <TableHead className="font-semibold text-slate-600">Status</TableHead>
-                    <TableHead className="font-semibold text-slate-600">Items</TableHead>
-                    <TableHead className="font-semibold text-slate-600">Time</TableHead>
-                    <TableHead className="font-semibold text-slate-600 text-right">Total</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredOrders.map((order) => (
-                    <TableRow key={order.id} className="border-slate-50 hover:bg-slate-50/50 transition-colors">
-                      <TableCell>
-                        <span className="font-bold text-slate-900 leading-none">#{order.id.slice(0, 5)}</span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="secondary" className="bg-slate-100 text-slate-700 border-none font-bold">
-                          T-{order.tableNumber || 'WALK'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Select value={order.status} onValueChange={(val) => updateStatus(order.id, val)}>
-                          <SelectTrigger className={cn(
-                            "h-8 w-32 border font-bold text-[10px] uppercase rounded-lg",
-                            STATUS_COLORS[order.status]
-                          )}>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="PENDING">Pending</SelectItem>
-                            <SelectItem value="ACCEPTED">Accepted</SelectItem>
-                            <SelectItem value="PREPARING">Preparing</SelectItem>
-                            <SelectItem value="READY">Ready</SelectItem>
-                            <SelectItem value="COMPLETED">Completed</SelectItem>
-                            <SelectItem value="CANCELLED">Cancelled</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-col gap-1">
-                          {order.items?.slice(0, 2).map((item: any) => (
-                            <span key={item.id} className="text-xs text-slate-600 block">
-                              {item.quantity}x {item.product?.name}
-                            </span>
-                          ))}
-                          {order.items?.length > 2 && (
-                            <span className="text-[10px] text-slate-400 font-medium italic">
-                              + {order.items.length - 2} more items
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-slate-400 text-xs font-mono">
-                        {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </TableCell>
-                      <TableCell className="text-right font-bold text-slate-900">
-                        ${order.totalAmount.toFixed(2)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {filteredOrders.length === 0 && !loading && (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center py-24">
-                        <div className="flex flex-col items-center opacity-20 text-slate-400">
-                          <ClipboardList size={64} />
-                          <p className="mt-4 font-mono font-bold uppercase">No orders found</p>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
         </TabsContent>
       </Tabs>
     </div>

@@ -40,24 +40,25 @@ import { useAuth } from '@/src/hooks/useAuth';
 export default function MenuManagement() {
   const { token } = useAuth();
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [productGroups, setProductGroups] = useState<{ id: string; name: string }[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [stations, setStations] = useState<{ id: string; name: string }[]>([]);
   const [inventoryItems, setInventoryItems] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-
   const [newImage, setNewImage] = useState<File | null>(null);
   const [editImage, setEditImage] = useState<File | null>(null);
-
   const [newCategory, setNewCategory] = useState({ name: '', description: '' });
+  const [newGroup, setNewGroup] = useState({ name: '' });
   const [newProduct, setNewProduct] = useState({
     name: '',
     description: '',
     price: '',
+    cost: '',
     categoryId: '',
     stationId: '',
+    groupId: '',
     inventoryItemId: '',
-    groupId: 'default' // Simple group for MVP
   });
 
   const [editingProduct, setEditingProduct] = useState<any>(null);
@@ -67,6 +68,7 @@ export default function MenuManagement() {
     const fetchData = async () => {
       try {
         const catRes = await fetch('/api/menu/categories');
+        const groupRes = await fetch('/api/menu/groups');
         const prodRes = await fetch('/api/menu/products');
         const statRes = await fetch('/api/stations');
         const invRes = await fetch('/api/inventory', {
@@ -74,6 +76,7 @@ export default function MenuManagement() {
         });
         
         setCategories(await catRes.json());
+        setProductGroups(await groupRes.json());
         setProducts(await prodRes.json());
         setStations(await statRes.json());
         setInventoryItems(await invRes.json());
@@ -96,6 +99,21 @@ export default function MenuManagement() {
       setCategories([...categories, data]);
       setNewCategory({ name: '', description: '' });
       toast.success('Category created');
+    }
+  };
+
+  const handleAddGroup = async () => {
+    if (!newGroup.name) return;
+    const res = await fetch('/api/menu/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(newGroup),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setProductGroups([...productGroups, data]);
+      setNewGroup({ name: '' });
+      toast.success('Product group created');
     }
   };
 
@@ -122,7 +140,7 @@ export default function MenuManagement() {
   };
 
   const handleAddProduct = async () => {
-    if (!newProduct.name || !newProduct.categoryId || !newProduct.stationId) {
+    if (!newProduct.name || !newProduct.categoryId || !newProduct.groupId || !newProduct.stationId) {
       toast.error('Please fill in all required fields');
       return;
     }
@@ -136,9 +154,9 @@ export default function MenuManagement() {
     const payload = {
       ...newProduct,
       price: parseFloat(newProduct.price),
+      cost: parseFloat(newProduct.cost) || 0,
       image: imageUrl,
-      inventoryItemId: newProduct.inventoryItemId || null,
-      groupId: 'default' 
+      inventoryItemId: newProduct.inventoryItemId || null
     };
     const res = await fetch('/api/menu/products', {
       method: 'POST',
@@ -148,7 +166,7 @@ export default function MenuManagement() {
     if (res.ok) {
       const data = await res.json();
       setProducts([...products, data]);
-      setNewProduct({ name: '', description: '', price: '', categoryId: '', stationId: '', inventoryItemId: '', groupId: 'default' });
+      setNewProduct({ name: '', description: '', price: '', cost: '', categoryId: '', stationId: '', inventoryItemId: '', groupId: '' });
       setNewImage(null);
       toast.success('Product added to menu');
     }
@@ -169,6 +187,7 @@ export default function MenuManagement() {
     const payload = {
       ...editingProduct,
       price: parseFloat(editingProduct.price),
+      cost: parseFloat(editingProduct.cost) || 0,
       image: imageUrl,
       inventoryItemId: editingProduct.inventoryItemId || null
     };
@@ -195,7 +214,7 @@ export default function MenuManagement() {
   };
 
   const openEditDialog = (product: any) => {
-    setEditingProduct({ ...product, price: product.price.toString() });
+    setEditingProduct({ ...product, price: product.price.toString(), cost: (product.cost || 0).toString() });
     setIsEditDialogOpen(true);
   };
 
@@ -242,6 +261,27 @@ export default function MenuManagement() {
 
           <Dialog>
             <DialogTrigger>
+              <Button variant="outline" className="rounded-xl border-slate-200">
+                <Layers className="mr-2" size={18} /> New Group
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="rounded-2xl border-none">
+              <DialogHeader>
+                <DialogTitle>Add Operational Group</DialogTitle>
+                <CardDescription>Groups like "Kitchen Food" or "Bar Drinks" manage routing.</CardDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label>Group Name</Label>
+                  <Input value={newGroup.name} onChange={e => setNewGroup({name: e.target.value})} placeholder="e.g. Grill" />
+                </div>
+                <Button onClick={handleAddGroup} className="w-full bg-slate-900">Create Group</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog>
+            <DialogTrigger>
               <Button className="rounded-xl bg-slate-900">
                 <Plus className="mr-2" size={18} /> Add Product
               </Button>
@@ -257,22 +297,40 @@ export default function MenuManagement() {
                 </div>
                 <div className="space-y-2">
                   <Label>Category*</Label>
-                  <Select onValueChange={(v: string) => setNewProduct({...newProduct, categoryId: v})}>
+                  <Select onValueChange={(v) => setNewProduct({...newProduct, categoryId: v})}>
                     <SelectTrigger>
                       <SelectValue placeholder="Select" />
                     </SelectTrigger>
                     <SelectContent>
-                      {categories.map((c: { id: string; name: string }) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                      {categories.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>Price*</Label>
+                  <Label>Product Group*</Label>
+                  <Select onValueChange={(v) => setNewProduct({...newProduct, groupId: v})}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select Group" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {productGroups.map((g) => <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Sale Price ($)*</Label>
                   <Input type="number" step="0.01" value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: e.target.value})} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Unit Cost ($)</Label>
+                  <Input type="number" step="0.01" value={newProduct.cost} onChange={e => setNewProduct({...newProduct, cost: e.target.value})} />
                 </div>
                 <div className="col-span-2 space-y-2">
                   <Label>Production Station*</Label>
-                  <Select onValueChange={(v: string) => setNewProduct({...newProduct, stationId: v})}>
+                  <Select 
+                    value={newProduct.stationId || undefined} 
+                    onValueChange={(v: string) => setNewProduct({...newProduct, stationId: v})}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Route to..." />
                     </SelectTrigger>
@@ -328,7 +386,8 @@ export default function MenuManagement() {
                 <TableHead className="w-[80px]">Image</TableHead>
                 <TableHead>Product</TableHead>
                 <TableHead>Category</TableHead>
-                <TableHead>Price</TableHead>
+                <TableHead>Cost</TableHead>
+                <TableHead>Sale Price</TableHead>
                 <TableHead>Station</TableHead>
                 <TableHead>Availability</TableHead>
                 <TableHead className="text-right"></TableHead>
@@ -352,6 +411,7 @@ export default function MenuManagement() {
                       {product.category?.name}
                     </Badge>
                   </TableCell>
+                  <TableCell className="text-slate-500 text-sm">${(product.cost || 0).toFixed(2)}</TableCell>
                   <TableCell className="font-medium text-slate-900">${product.price.toFixed(2)}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2 text-slate-500 text-xs">
@@ -412,17 +472,38 @@ export default function MenuManagement() {
                   <SelectValue placeholder="Select" />
                 </SelectTrigger>
                 <SelectContent>
-                  {categories.map((c: { id: string; name: string }) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  {categories.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Price*</Label>
+              <Label>Product Group*</Label>
+              <Select 
+                value={editingProduct?.groupId || undefined}
+                onValueChange={v => setEditingProduct({...editingProduct, groupId: v})}
+              >
+                <SelectTrigger><SelectValue placeholder="Select Group" /></SelectTrigger>
+                <SelectContent>
+                  {productGroups.map((g) => <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Sale Price ($)*</Label>
               <Input 
                 type="number" 
                 step="0.01" 
                 value={editingProduct?.price || ''} 
                 onChange={e => setEditingProduct({...editingProduct, price: e.target.value})} 
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Unit Cost ($)</Label>
+              <Input 
+                type="number" 
+                step="0.01" 
+                value={editingProduct?.cost || ''} 
+                onChange={e => setEditingProduct({...editingProduct, cost: e.target.value})} 
               />
             </div>
             <div className="col-span-2 space-y-2">
@@ -463,6 +544,12 @@ export default function MenuManagement() {
                 onChange={e => setEditingProduct({...editingProduct, description: e.target.value})} 
               />
             </div>
+            {editingProduct?.image && (
+              <div className="col-span-2 space-y-2">
+                <Label>Current Image</Label>
+                <img src={editingProduct.image} alt="Current Product" className="w-24 h-24 object-cover rounded-lg" />
+              </div>
+            )}
             <div className="col-span-2 space-y-2">
               <Label>Update Image</Label>
               <Input type="file" accept="image/*" onChange={e => setEditImage(e.target.files?.[0] || null)} className="cursor-pointer" />

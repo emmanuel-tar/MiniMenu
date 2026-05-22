@@ -58,7 +58,7 @@ export default function Inventory() {
   const [search, setSearch] = useState('');
 
   const [isAddOpen, setIsAddOpen] = useState(false);
-  const [newItem, setNewItem] = useState({ name: '', unit: '', minStock: '0', sku: '' });
+  const [newItem, setNewItem] = useState({ name: '', unit: '', minStock: 0, sku: '' });
   
   const [isAdjustOpen, setIsAdjustOpen] = useState(false);
   const [adjustingItem, setAdjustingItem] = useState<InventoryItem | null>(null);
@@ -100,7 +100,7 @@ export default function Inventory() {
         },
         body: JSON.stringify({
           ...newItem,
-          minStock: parseFloat(newItem.minStock),
+          minStock: newItem.minStock,
           quantity: 0
         })
       });
@@ -188,7 +188,7 @@ export default function Inventory() {
                 </div>
                 <div className="col-span-2 space-y-2">
                   <Label>Alert Threshold (Low Stock)</Label>
-                  <Input type="number" value={newItem.minStock} onChange={e => setNewItem({...newItem, minStock: e.target.value})} className="rounded-xl" />
+                  <Input type="number" value={newItem.minStock} onChange={e => setNewItem({...newItem, minStock: parseFloat(e.target.value) || 0})} className="rounded-xl" />
                 </div>
               </div>
               <Button onClick={handleAddItem} className="bg-slate-900 rounded-xl h-12">Save Item</Button>

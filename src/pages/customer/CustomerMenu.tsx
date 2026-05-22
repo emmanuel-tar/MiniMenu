@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import React, { useEffect, useState, useMemo } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import { 
   ShoppingBag, 
   Search, 
@@ -10,9 +11,14 @@ import {
   X,
   CreditCard,
   CheckCircle2,
-  Utensils
+  Utensils,
+  ArrowLeft,
+  MessageSquare,
+  ShoppingCart,
+  Bell
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
@@ -24,18 +30,30 @@ import {
   SheetTrigger,
   SheetFooter
 } from '@/components/ui/sheet';
+import {
+  Dialog,
+  DialogContent,
+} from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 
 export default function CustomerMenu() {
   const { tableId } = useParams();
+  const navigate = useNavigate();
   const [categories, setCategories] = useState([]);
   const [cart, setCart] = useState<any[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [company, setCompany] = useState<any>({ name: 'QRMenu' });
+  const [table, setTable] = useState<any>(null);
   const [search, setSearch] = useState('');
   const [orderComplete, setOrderComplete] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<any>(null);
+  const [productQty, setProductQty] = useState(1);
+  const [productNote, setProductNote] = useState('');
+  const [lastOrderId, setLastOrderId] = useState<string | null>(null);
+
+  const socket = useMemo(() => io(), []);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -46,30 +64,48 @@ export default function CustomerMenu() {
 
       const compRes = await fetch('/api/company');
       setCompany(await compRes.json());
+
+      if (tableId) {
+        const tablesRes = await fetch('/api/tables');
+        const tables = await tablesRes.json();
+        const currentTable = tables.find((t: any) => t.id === tableId);
+        if (currentTable) setTable(currentTable);
+      }
     };
     fetchData();
-  }, []);
+  }, [tableId]);
 
-  const addToCart = (product: any) => {
-    const existing = cart.find(item => item.id === product.id);
+  const callWaiter = () => {
+    socket.emit('call-waiter', { 
+      tableId: tableId || 'WALK-IN', 
+      tableName: table?.name || `Table ${tableId || 'Anonymous'}` 
+    });
+    toast.success('Waiter called. Someone will be with you shortly!');
+  };
+
+  const handleAddToCart = (product: any, qty: number, note?: string) => {
+    const existing = cart.find((item: any) => item.id === product.id && item.note === note);
     if (existing) {
-      setCart(cart.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item));
+      setCart(cart.map((item: any) => (item.id === product.id && item.note === note) ? { ...item, quantity: item.quantity + qty } : item));
     } else {
-      setCart([...cart, { ...product, quantity: 1 }]);
+      setCart([...cart, { ...product, quantity: qty, note }]);
     }
     toast.success(`${product.name} added to cart`);
+    setSelectedProduct(null);
+    setProductQty(1);
+    setProductNote('');
   };
 
   const removeFromCart = (productId: string) => {
-    const item = cart.find(i => i.id === productId);
+    const item = cart.find((i: any) => i.id === productId);
     if (item.quantity > 1) {
-      setCart(cart.map(i => i.id === productId ? { ...i, quantity: i.quantity - 1 } : i));
+      setCart(cart.map((i: any) => i.id === productId ? { ...i, quantity: i.quantity - 1 } : i));
     } else {
-      setCart(cart.filter(i => i.id !== productId));
+      setCart(cart.filter((i: any) => i.id !== productId));
     }
   };
 
-  const cartTotal = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+  const cartTotal = cart.reduce((acc: number, item: any) => acc + (item.price * item.quantity), 0);
 
   const placeOrder = async () => {
     try {
@@ -78,10 +114,12 @@ export default function CustomerMenu() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tableNumber: tableId || 'WALK-IN',
-          items: cart.map(item => ({ productId: item.id, quantity: item.quantity }))
+          items: cart.map(item => ({ productId: item.id, quantity: item.quantity, note: item.note }))
         }),
       });
       if (res.ok) {
+        const data = await res.json();
+        setLastOrderId(data.id);
         setOrderComplete(true);
         setCart([]);
       }
@@ -102,8 +140,8 @@ export default function CustomerMenu() {
         </motion.div>
         <h2 className="text-3xl font-bold text-slate-900 mb-2">Order Received!</h2>
         <p className="text-slate-500 mb-8">Your food is being prepared. Grab a seat and relax!</p>
-        <Button onClick={() => setOrderComplete(false)} variant="outline" className="rounded-2xl border-slate-200">
-          Order More
+        <Button onClick={() => navigate(`/order/${lastOrderId}`)} className="bg-slate-900 rounded-2xl w-full max-w-xs h-14 font-bold">
+          Track My Order
         </Button>
       </div>
     );
@@ -113,15 +151,20 @@ export default function CustomerMenu() {
     <div className="min-h-screen bg-slate-50/50 pb-24">
       {/* Header */}
       <header className="bg-white px-6 pt-12 pb-6 sticky top-0 z-10 border-b border-slate-100">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">{company.name}</h1>
             <p className="text-xs text-slate-400 font-medium uppercase tracking-widest">
-              Table {tableId || 'Anonymous'}
+              {table ? table.name : `Table ${tableId || 'Anonymous'}`}
             </p>
           </div>
-          <div className="p-2 bg-slate-900 rounded-2xl text-white">
-            <ShoppingBag size={20} />
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="icon" onClick={callWaiter} className="rounded-2xl border-slate-200 h-10 w-10">
+              <Bell size={20} className="text-slate-600" />
+            </Button>
+            <div className="p-2 bg-slate-900 rounded-2xl text-white">
+              <ShoppingBag size={20} />
+            </div>
           </div>
         </div>
         
@@ -164,6 +207,7 @@ export default function CustomerMenu() {
                 <motion.div
                   layout
                   key={product.id}
+                  onClick={() => setSelectedProduct(product)}
                   className="bg-white p-4 rounded-3xl border border-slate-100 flex gap-4 items-center shadow-sm"
                 >
                   {product.image ? (
@@ -178,13 +222,9 @@ export default function CustomerMenu() {
                     <p className="text-xs text-slate-500 line-clamp-2 mt-0.5">{product.description}</p>
                     <div className="flex items-center justify-between mt-3">
                       <span className="font-bold text-slate-900">${product.price.toFixed(2)}</span>
-                      <Button 
-                        size="sm" 
-                        onClick={() => addToCart(product)} 
-                        className="h-8 w-8 rounded-full bg-slate-900 p-0"
-                      >
+                      <div className="h-8 w-8 rounded-full bg-slate-900 flex items-center justify-center text-white">
                         <Plus size={16} />
-                      </Button>
+                      </div>
                     </div>
                   </div>
                 </motion.div>
@@ -193,6 +233,62 @@ export default function CustomerMenu() {
           </div>
         ))}
       </div>
+
+      {/* Product Detail Modal */}
+      <Dialog open={!!selectedProduct} onOpenChange={() => setSelectedProduct(null)}>
+        <DialogContent className="max-w-md p-0 overflow-hidden border-none rounded-t-[2.5rem] bottom-0 top-auto translate-y-0 fixed h-[90vh]">
+          {selectedProduct && (
+            <div className="flex flex-col h-full bg-white">
+              <div className="relative h-64 flex-shrink-0">
+                <img src={selectedProduct.image || '/placeholder-food.jpg'} className="w-full h-full object-cover" alt="" />
+                <Button variant="secondary" size="icon" className="absolute top-6 right-6 rounded-full bg-white/80 backdrop-blur-sm" onClick={() => setSelectedProduct(null)}>
+                  <X size={20} />
+                </Button>
+              </div>
+              <div className="p-8 flex flex-col flex-1 overflow-y-auto">
+                <div className="flex justify-between items-start mb-4">
+                  <h2 className="text-2xl font-bold text-slate-900">{selectedProduct.name}</h2>
+                  <span className="text-xl font-bold text-slate-900">${selectedProduct.price.toFixed(2)}</span>
+                </div>
+                <p className="text-slate-500 mb-8 leading-relaxed">{selectedProduct.description}</p>
+                
+                <div className="space-y-4 mb-8">
+                  <Label className="text-sm font-bold flex items-center gap-2">
+                    <MessageSquare size={16} className="text-slate-400" />
+                    Special Instructions
+                  </Label>
+                  <Input 
+                    placeholder="e.g. No onions, extra spicy..." 
+                    className="rounded-xl h-12 bg-slate-50 border-none"
+                    value={productNote}
+                    onChange={e => setProductNote(e.target.value)}
+                  />
+                </div>
+
+                <div className="mt-auto pt-6 flex flex-col gap-4">
+                  <div className="flex items-center justify-center gap-6 bg-slate-50 p-4 rounded-2xl">
+                    <Button variant="ghost" size="icon" className="h-10 w-10 rounded-full bg-white" onClick={() => setProductQty(Math.max(1, productQty - 1))}>
+                      <Minus size={18} />
+                    </Button>
+                    <span className="text-xl font-bold w-8 text-center">{productQty}</span>
+                    <Button variant="ghost" size="icon" className="h-10 w-10 rounded-full bg-white" onClick={() => setProductQty(productQty + 1)}>
+                      <Plus size={18} />
+                    </Button>
+                  </div>
+                  
+                  <Button 
+                    className="w-full bg-slate-900 rounded-3xl h-16 text-lg font-bold flex justify-between px-8"
+                    onClick={() => handleAddToCart(selectedProduct, productQty, productNote)}
+                  >
+                    <span>Add to Cart</span>
+                    <span>${(selectedProduct.price * productQty).toFixed(2)}</span>
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Cart Drawer */}
       <AnimatePresence>
@@ -234,14 +330,15 @@ export default function CustomerMenu() {
                         </div>
                         <div>
                           <p className="font-bold text-slate-900">{item.name}</p>
-                          <p className="text-xs text-slate-500">${(item.price * item.quantity).toFixed(2)}</p>
+                          {item.note && <p className="text-[10px] text-amber-600 italic">"{item.note}"</p>}
+                          <p className="text-xs text-slate-500 mt-0.5">${(item.price * item.quantity).toFixed(2)}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
                         <Button variant="outline" size="icon" className="h-8 w-8 rounded-full border-slate-100" onClick={() => removeFromCart(item.id)}>
                           <Minus size={14} />
                         </Button>
-                        <Button variant="outline" size="icon" className="h-8 w-8 rounded-full border-slate-100" onClick={() => addToCart(item)}>
+                        <Button variant="outline" size="icon" className="h-8 w-8 rounded-full border-slate-100" onClick={() => handleAddToCart(item, 1, item.note)}>
                           <Plus size={14} />
                         </Button>
                       </div>
