@@ -7,6 +7,8 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+
+
 model User {
   id        String             @id @default(uuid())
   email     String             @unique
@@ -23,11 +25,18 @@ model Company {
   id           String   @id @default(uuid())
   name         String
   logo         String?
-  currency     String   @default("USD")
+  currency     String   @default("NGN")
+  secondaryCurrency String?
+  exchangeRate      Float?   @default(1.0)
   taxRate      Float    @default(0)
+  enableServiceCharge Boolean  @default(false)
+  serviceChargeRate Float?   @default(0)
   contactEmail String?
   phone        String?
   address      String?
+  bankName     String?
+  accountName  String?
+  accountNumber String?
   updatedAt    DateTime @updatedAt
   receiptSettings ReceiptSetting?
   printers       Printer[]
@@ -147,11 +156,13 @@ model StockLog {
 model Payment {
   id            String   @id @default(uuid())
   orderId       String   @unique
-  method        String   // CASH, POS, TRANSFER, CARD
+  method        String   // CASH, POS, TRANSFER, CARD, ONLINE
   amount        Float
-  status        String   @default("SUCCESS")
+  status        String   @default("PENDING") // PENDING, SUBMITTED, SUCCESS, REJECTED
+  customerConfirmed Boolean @default(false)
   reference     String?
   paidAt        DateTime @default(now())
+  confirmedAt   DateTime?
   order         Order    @relation(fields: [orderId], references: [id])
 }
 
@@ -166,24 +177,61 @@ model Table {
 }
 
 model Order {
-  id          String      @id @default(uuid())
-  tableId     String?
-  tableNumber String?
-  status      String      @default("PENDING")
-  totalAmount Float
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  kots        KOT[]
-  items       OrderItem[]
-  payment     Payment?
-  table       Table?      @relation(fields: [tableId], references: [id])
+  id                 String      @id @default(uuid())
+  tableId            String?
+  tableNumber        String?
+  status             String      @default("PENDING")
+  totalAmount        Float
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  // Service handling (who serves/cashier delivered) and tips
+  serviceAssignments ServiceAssignment[]
+  tips               Tip[]
+
+  kots               KOT[]
+  items              OrderItem[]
+  payment            Payment?
+  table              Table?      @relation(fields: [tableId], references: [id])
 }
+
+model ServiceAssignment {
+  id              String   @id @default(uuid())
+  orderId         String
+  order           Order    @relation(fields: [orderId], references: [id])
+
+  personName      String
+  role             String
+  assignedAt      DateTime @default(now())
+  deliveryAssignTime DateTime
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tip             Tip?
+}
+
+model Tip {
+  id                  String   @id @default(uuid())
+  orderId             String
+  order               Order    @relation(fields: [orderId], references: [id])
+
+  serviceAssignmentId String? @unique
+  serviceAssignment    ServiceAssignment? @relation(fields: [serviceAssignmentId], references: [id])
+
+  tipAmount           Float
+  givenAt             DateTime @default(now())
+  givenByName         String?
+}
+
 
 model KOT {
   id        String            @id @default(uuid())
   orderId   String
   stationId String
   status    String            @default("PENDING")
+  prepTimeMinutes   Int?
+  estimatedReadyTime DateTime?
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
   station   ProductionStation @relation(fields: [stationId], references: [id])
@@ -201,6 +249,9 @@ model OrderItem {
   productName String
   price       Float
   status      String            @default("PENDING")
+  prepTimeMinutes        Int?
+  countdownStartedAt      DateTime?
+  estimatedCompletionTime DateTime?
   createdAt   DateTime          @default(now())
   kot         KOT?              @relation(fields: [kotId], references: [id])
   station     ProductionStation @relation(fields: [stationId], references: [id])

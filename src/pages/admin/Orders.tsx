@@ -11,7 +11,8 @@ import {
   Truck,
   Ban,
   List,
-  Printer
+   Printer,
+  Timer
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { 
@@ -52,6 +53,7 @@ const STATUS_COLORS: Record<string, string> = {
   PREPARING: "bg-indigo-100 text-indigo-700 border-indigo-200",
   READY: "bg-emerald-100 text-emerald-700 border-emerald-200",
   PAID: "bg-purple-100 text-purple-700 border-purple-200",
+  AWAITING_PAYMENT: "bg-rose-100 text-rose-700 border-rose-200",
   COMPLETED: "bg-slate-100 text-slate-500 border-slate-200",
   CANCELLED: "bg-red-100 text-red-700 border-red-200",
 };
@@ -62,8 +64,29 @@ const STATUS_ICONS: Record<string, any> = {
   PREPARING: ChefHat,
   READY: AlertCircle,
   PAID: CheckCircle2,
+  AWAITING_PAYMENT: Clock,
   COMPLETED: Truck,
   CANCELLED: Ban,
+};
+
+const CountdownDisplay = ({ targetDate }: { targetDate: string }) => {
+  const [timeLeft, setTimeLeft] = useState<number>(0);
+
+  useEffect(() => {
+    const calculate = () => {
+      const diff = new Date(targetDate).getTime() - new Date().getTime();
+      setTimeLeft(Math.max(0, Math.floor(diff / 1000)));
+    };
+    calculate();
+    const timer = setInterval(calculate, 1000);
+    return () => clearInterval(timer);
+  }, [targetDate]);
+
+  const mins = Math.floor(timeLeft / 60);
+  const secs = timeLeft % 60;
+  const colorClass = timeLeft > 300 ? "text-emerald-500" : timeLeft > 0 ? "text-amber-500" : "text-rose-500 animate-pulse";
+
+  return <span className={cn("font-mono font-bold", colorClass)}>{mins}m {secs}s</span>;
 };
 
 export default function Orders() {
@@ -84,9 +107,22 @@ export default function Orders() {
 
   const [isBillingOpen, setIsBillingOpen] = useState(false);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
+  const [isTimerDialogOpen, setIsTimerDialogOpen] = useState(false);
+  const [selectedKot, setSelectedKot] = useState<any>(null);
+  const [prepTime, setPrepTime] = useState("15");
   const [orderToCancel, setOrderToCancel] = useState<any>(null);
   const [paymentMethod, setPaymentMethod] = useState('CASH');
   const [company, setCompany] = useState<any>(null);
+  const [receiptSettings, setReceiptSettings] = useState<any>(null);
+
+  const formatPrice = (amount: number) => {
+    const primary = `${company?.currency || 'NGN'}${amount.toLocaleString()}`;
+    if (company?.secondaryCurrency && company?.exchangeRate) {
+      const secondary = `${company.secondaryCurrency}${(amount * company.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+      return <span className="flex flex-col items-end"><span>{primary}</span><span className="text-[10px] opacity-40">({secondary})</span></span>;
+    }
+    return primary;
+  };
 
   const fetchData = async () => {
     try {
@@ -98,7 +134,9 @@ export default function Orders() {
       ]);
 
       const compRes = await fetch('/api/company');
+      const setRes = await fetch('/api/settings/receipt');
       if (compRes.ok) setCompany(await compRes.json());
+      if (setRes.ok) setReceiptSettings(await setRes.json());
 
       if (ordersRes.ok && kotsRes.ok && stationsRes.ok) {
         const ordersData = await ordersRes.json();
@@ -132,6 +170,11 @@ export default function Orders() {
           description: `Table ${order.tableNumber} - $${(order.totalAmount || 0).toFixed(2)}`,
         });
         fetchData(); // Refresh list immediately to show the new order in Kitchen View
+      });
+
+      socket.on("timer-started", (data: any) => {
+        toast.info(`Timer started for Table ${data.tableNumber}`);
+        fetchData();
       });
 
       const interval = setInterval(fetchData, 10000);
@@ -173,14 +216,26 @@ export default function Orders() {
     const printWindow = window.open('', '_blank', 'width=400,height=600');
     if (!printWindow) return;
 
+    const taxRate = company?.taxRate || 0;
+    const serviceRate = company?.enableServiceCharge ? (company?.serviceChargeRate || 0) : 0;
+    
+    const total = order.totalAmount;
+    const subtotal = total / (1 + (taxRate / 100) + (serviceRate / 100));
+    const taxAmount = total - subtotal;
+    const primaryCurrency = company?.currency || 'NGN';
+    const secondaryCurrency = company?.secondaryCurrency;
+    const exchangeRate = company?.exchangeRate;
+
     const itemsHtml = order.items.map((i: any) => `
       <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 4px;">
         <span>${i.quantity}x ${i.productName}</span>
-        <span>$${(i.price * i.quantity).toFixed(2)}</span>
+        <span>${primaryCurrency}${(i.price * i.quantity).toLocaleString()}</span>
       </div>
     `).join('');
 
     const showLogo = receiptSettings?.showLogo && company?.logo;
+    const showTax = receiptSettings?.showTax;
+    const showSecondaryCurrency = secondaryCurrency && exchangeRate;
     const footerText = receiptSettings?.footerText;
 
     printWindow.document.write(`
@@ -191,6 +246,8 @@ export default function Orders() {
             .header { text-align: center; margin-bottom: 15px; }
             .logo { max-width: 120px; height: auto; margin-bottom: 10px; }
             .items { margin: 10px 0; }
+            .breakdown { font-size: 13px; margin-top: 10px; border-top: 1px solid #eee; padding-top: 5px; margin-bottom: 5px; }
+            .row { display: flex; justify-content: space-between; margin-bottom: 2px; }
             .total { display: flex; justify-content: space-between; font-weight: bold; margin-top: 10px; border-top: 1px dashed #000; padding-top: 10px; font-size: 16px; }
             .footer { text-align: center; margin-top: 25px; font-size: 12px; border-top: 1px dashed #000; padding-top: 10px; }
             hr { border: 0; border-top: 1px dashed #000; margin: 10px 0; }
@@ -204,10 +261,24 @@ export default function Orders() {
             <p style="margin: 2px 0; font-size: 12px; opacity: 0.7;">Order: #${order.id.slice(0, 8)}</p>
           </div>
           <hr/>
-          <div class="items">${itemsHtml}</div>
+          <div class="items">${itemsHtml}</div>          
+          <div class="breakdown">
+            <div class="row"><span>Subtotal</span><span>${primaryCurrency}${subtotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</span></div>
+            ${showTax ? `
+            <div class="row">
+              <span>VAT (${taxRate}%)</span>
+              <span>${primaryCurrency}${taxAmount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+            </div>` : ''}
+          </div>
           <div class="total">
             <span>Total</span>
-            <span>$${order.totalAmount.toFixed(2)}</span>
+            <span>${primaryCurrency}${total.toLocaleString()}</span>
+          </div>
+          ${showSecondaryCurrency ? `
+          <div class="total" style="font-size: 14px; font-weight: normal; border-top: none; padding-top: 0;">
+            <span></span>
+            <span>(${secondaryCurrency}${(total * exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2 })})</span>
+          </div>` : ''}
           </div>
           <div class="footer">${footerText || 'Thank you for dining with us!'}</div>
           <script>window.onload = () => { window.print(); setTimeout(() => window.close(), 100); };</script>
@@ -236,7 +307,7 @@ export default function Orders() {
     }
   };
 
-  const updateKotStatus = async (kotId: string, newStatus: string) => {
+  const updateKotStatus = async (kotId: string, newStatus: string, time?: number) => {
     try {
       const res = await fetch(`/api/admin/kots/${kotId}/status`, {
         method: 'PUT',
@@ -244,7 +315,7 @@ export default function Orders() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}` 
         },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify({ status: newStatus, prepTimeMinutes: time }),
       });
       if (res.ok) {
         toast.success(`KOT status updated`);
@@ -347,6 +418,7 @@ export default function Orders() {
                   <SelectItem value="PREPARING">Preparing</SelectItem>
                   <SelectItem value="READY">Ready</SelectItem>
                   <SelectItem value="PAID">Paid</SelectItem>
+                  <SelectItem value="AWAITING_PAYMENT">Awaiting Payment</SelectItem>
                   <SelectItem value="COMPLETED">Completed</SelectItem>
                   <SelectItem value="CANCELLED">Cancelled</SelectItem>
                 </SelectContent>
@@ -407,6 +479,7 @@ export default function Orders() {
                             <SelectItem value="PREPARING">Preparing</SelectItem>
                             <SelectItem value="READY">Ready</SelectItem>
                             <SelectItem value="PAID">Paid</SelectItem>
+                            <SelectItem value="AWAITING_PAYMENT">Awaiting Payment</SelectItem>
                             <SelectItem value="COMPLETED">Completed</SelectItem>
                             <SelectItem value="CANCELLED">Cancelled</SelectItem>
                           </SelectContent>
@@ -449,11 +522,20 @@ export default function Orders() {
                         {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </TableCell>
                       <TableCell className="text-right font-bold text-slate-900">
-                        ${order.totalAmount.toFixed(2)}
+                        {formatPrice(order.totalAmount)}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
                           {order.status === 'READY' && (
+                            <Button 
+                              size="sm" 
+                              className="h-8 rounded-lg bg-rose-600 hover:bg-rose-700 text-[10px] font-bold"
+                              onClick={() => updateStatus(order.id, 'AWAITING_PAYMENT')}
+                            >
+                              Request Payment
+                            </Button>
+                          )}
+                          {(order.status === 'READY' || order.status === 'AWAITING_PAYMENT') && (
                             <Button 
                               size="sm" 
                               className="h-8 rounded-lg bg-slate-900 text-[10px] font-bold"
@@ -526,8 +608,16 @@ export default function Orders() {
                       <CardTitle className="text-2xl font-bold">T-{kot.order?.tableNumber || 'WALK'}</CardTitle>
                       <CardDescription className="text-[10px] font-mono flex items-center gap-1 mt-1">
                         <Clock size={10} />
-                        {new Date(kot.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        Ordered: {new Date(kot.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </CardDescription>
+                      {kot.estimatedReadyTime && kot.status !== 'COMPLETED' && (
+                        <div className="mt-2 flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                          <Timer size={14} className="text-slate-400" />
+                          <div className="flex flex-col">
+                             <CountdownDisplay targetDate={kot.estimatedReadyTime} />
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <Badge className="bg-slate-900/10 text-slate-900 border-none px-3 py-1 rounded-full text-xs font-bold">
                       ORD #{kot.order?.id?.slice(0, 4)}
@@ -553,7 +643,7 @@ export default function Orders() {
                       {kot.status === 'PENDING' && (
                         <Button 
                           className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-10 font-bold text-xs uppercase"
-                          onClick={() => updateKotStatus(kot.id, 'ACCEPTED')}
+                          onClick={() => { setSelectedKot(kot); setIsTimerDialogOpen(true); }}
                         >
                           Accept
                         </Button>
@@ -623,7 +713,12 @@ export default function Orders() {
             <div className="bg-slate-900 text-white p-6 rounded-2xl flex justify-between items-center">
               <div>
                 <p className="text-xs uppercase font-bold opacity-60">Total Amount Due</p>
-                <p className="text-3xl font-bold">${(selectedOrder?.totalAmount || 0).toFixed(2)}</p>
+                <p className="text-3xl font-bold">
+                  {company?.currency || 'NGN'}{(selectedOrder?.totalAmount || 0).toLocaleString()}
+                </p>
+                {company?.secondaryCurrency && company?.exchangeRate && (
+                  <p className="text-sm opacity-50">{company.secondaryCurrency}{((selectedOrder?.totalAmount || 0) * company.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                )}
               </div>
               <div className="bg-white/10 p-3 rounded-xl">
                 <Printer size={24} />

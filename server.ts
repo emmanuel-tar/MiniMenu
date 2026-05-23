@@ -42,6 +42,42 @@ interface PrintableKot {
   };
 }
 
+interface PrintableInvoiceItem {
+  quantity: number;
+  productName: string;
+  price: number;
+}
+
+interface PrintableInvoice {
+  orderId: string;
+  tableNumber: string;
+  items: PrintableInvoiceItem[];
+  subtotal: number;
+  taxAmount: number;
+  totalAmount: number;
+  createdAt: string;
+  company: {
+    name: string;
+    logo?: string;
+    address?: string;
+    phone?: string;
+    currency: string;
+  };
+  receiptSettings: {
+    footerText?: string;
+    showLogo: boolean;
+    showTax: boolean;
+    paperSize: string;
+  };
+  printer: {
+    id: string;
+    name: string;
+    type: string;
+    ipAddress?: string;
+    port?: number;
+  };
+}
+
 interface ProductImport {
   name: string;
   description: string | null;
@@ -92,6 +128,10 @@ async function startServer() {
   const handledWaiterCalls: any[] = (globalThis as any).handledWaiterCalls ?? [];
   (globalThis as any).handledWaiterCalls = handledWaiterCalls;
 
+  // In-memory storage for active payment selections
+  const activePaymentSelections: any[] = (globalThis as any).activePaymentSelections ?? [];
+  (globalThis as any).activePaymentSelections = activePaymentSelections;
+
   // Socket.IO Connection Logic
   io.on("connection", (socket: Socket) => {
     socket.on("join-order", (orderId: string) => {
@@ -110,6 +150,63 @@ async function startServer() {
       activeWaiterCalls.push(call);
       console.log(`[Socket] Waiter called to table: ${call.tableName}`);
       io.emit("waiter-requested", call);
+    });
+
+    // Handle payment method selection from customer tracking page
+    socket.on("payment-method-selected", async (data: { orderId: string; method: string }) => {
+      console.log(`[Socket] Payment method ${data.method} selected for order ${data.orderId}`);
+      try {
+        const order = await prisma.order.findUnique({
+          where: { id: data.orderId },
+          include: { table: true }
+        });
+
+        if (!order) return;
+
+      const selection = {
+        id: crypto.randomUUID(),
+        orderId: data.orderId,
+        method: data.method,
+        tableNumber: order.tableNumber || 'Walk-in',
+        createdAt: new Date().toISOString()
+      };
+
+      const existingIndex = activePaymentSelections.findIndex(s => s.orderId === data.orderId);
+      if (existingIndex !== -1) activePaymentSelections.splice(existingIndex, 1);
+      activePaymentSelections.push(selection);
+
+      io.emit("payment-method-updated", selection);
+
+        // Find printer assigned to CASHIER role to notify staff of payment request
+        const printers = await prisma.printer.findMany({
+          where: { active: true, role: 'CASHIER' }
+        });
+
+        if (printers.length > 0) {
+          const targetPrinter = printers[0];
+          const printableKot: PrintableKot = {
+            kotId: `PAY-${order.id.slice(0, 5)}`,
+            orderId: order.id,
+            tableNumber: order.tableNumber || 'Walk-in',
+            stationName: "PAYMENT REQUEST",
+            items: [{
+              quantity: 1,
+              productName: `BILLING REQUEST: ${data.method}`,
+            }],
+            createdAt: new Date().toISOString(),
+            printer: {
+              id: targetPrinter.id,
+              name: targetPrinter.name,
+              type: targetPrinter.type,
+              ipAddress: targetPrinter.ipAddress || undefined,
+              port: targetPrinter.port || undefined,
+            }
+          };
+          io.emit("print-kot", printableKot);
+        }
+      } catch (err) {
+        console.error("Socket Payment Selection Error:", err);
+      }
     });
 
     socket.on("dismiss-waiter-call", (id: string) => {
@@ -235,7 +332,7 @@ async function startServer() {
 
   app.post("/api/company", authenticate, async (req: AuthenticatedRequest, res: Response) => {
     if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
-    const data = req.body;
+    const { id, updatedAt, ...data } = req.body;
     const existing = await prisma.company.findFirst();
     if (existing) {
       const updated = await prisma.company.update({
@@ -278,9 +375,10 @@ async function startServer() {
 
     const existing = await prisma.receiptSetting.findFirst();
     if (existing) {
+      const { id, companyId, ...data } = req.body;
       const updated = await prisma.receiptSetting.update({
         where: { id: existing.id },
-        data: req.body
+        data
       });
       return res.json(updated);
     }
@@ -311,11 +409,75 @@ async function startServer() {
 
         const updatedOrder = await tx.order.update({
           where: { id },
-          data: { status: 'PAID' }
+          data: { status: 'PAID' },
+          include: { items: true }
         });
+
+        const selectionIndex = activePaymentSelections.findIndex(s => s.orderId === id);
+        if (selectionIndex !== -1) {
+          activePaymentSelections.splice(selectionIndex, 1);
+          io.emit("payment-method-cleared", id);
+        }
+
+        // Close the table
+        if (order.tableId) {
+          await tx.table.update({
+            where: { id: order.tableId },
+            data: { status: 'AVAILABLE' }
+          });
+        }
 
         return { payment, order: updatedOrder };
       });
+
+      // Trigger Auto-Print if configured
+      const [company, settings, printers] = await Promise.all([
+        prisma.company.findFirst(),
+        prisma.receiptSetting.findFirst(),
+        prisma.printer.findMany({ where: { role: 'CASHIER', active: true } })
+      ]);
+
+      if (settings?.autoPrint && printers.length > 0 && company) {
+        const targetPrinter = printers[0];
+        const taxRate = company.taxRate || 0;
+        const subtotal = result.order.totalAmount / (1 + (taxRate / 100));
+        const taxAmount = result.order.totalAmount - subtotal;
+
+        const printableInvoice: PrintableInvoice = {
+          orderId: result.order.id,
+          tableNumber: result.order.tableNumber || 'Walk-in',
+          items: result.order.items.map(i => ({
+            quantity: i.quantity,
+            productName: i.productName,
+            price: i.price
+          })),
+          subtotal,
+          taxAmount,
+          totalAmount: result.order.totalAmount,
+          createdAt: result.order.createdAt.toISOString(),
+          company: {
+            name: company.name,
+            logo: company.logo || undefined,
+            address: company.address || undefined,
+            phone: company.phone || undefined,
+            currency: company.currency
+          },
+          receiptSettings: {
+            footerText: settings.footerText || undefined,
+            showLogo: settings.showLogo,
+            showTax: settings.showTax,
+            paperSize: settings.paperSize
+          },
+          printer: {
+            id: targetPrinter.id,
+            name: targetPrinter.name,
+            type: targetPrinter.type,
+            ipAddress: targetPrinter.ipAddress || undefined,
+            port: targetPrinter.port || undefined
+          }
+        };
+        io.emit("print-invoice", printableInvoice);
+      }
 
       io.emit("order-paid", { orderId: id, tableNumber: result.order.tableNumber });
       res.json(result);
@@ -571,6 +733,11 @@ async function startServer() {
   // Handled Waiter Requests API
   app.get("/api/admin/waiter-calls/history", authenticate, (req, res) => {
     res.json(handledWaiterCalls);
+  });
+
+  // Active Payment Selections API
+  app.get("/api/admin/payment-selections", authenticate, (req, res) => {
+    res.json(activePaymentSelections);
   });
 
   // Menu Management
@@ -886,6 +1053,15 @@ async function startServer() {
         where: { id },
         data: { status }
       });
+
+      if (['PAID', 'CANCELLED', 'COMPLETED'].includes(status)) {
+        const idx = activePaymentSelections.findIndex(s => s.orderId === id);
+        if (idx !== -1) {
+          activePaymentSelections.splice(idx, 1);
+          io.emit("payment-method-cleared", id);
+        }
+      }
+
       // Real-time update for the tracking customer
       io.to(`order-${id}`).emit("order-status-updated", { status });
       res.json(order);
@@ -909,18 +1085,44 @@ async function startServer() {
 
   app.put("/api/admin/kots/:id/status", authenticate, async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, prepTimeMinutes } = req.body;
     try {
+      const updateData: any = { status };
+      
+      if (status === 'ACCEPTED' && prepTimeMinutes) {
+        const readyTime = new Date();
+        readyTime.setMinutes(readyTime.getMinutes() + prepTimeMinutes);
+        updateData.prepTimeMinutes = prepTimeMinutes;
+        updateData.estimatedReadyTime = readyTime;
+      }
+
       const kot = await prisma.kOT.update({
         where: { id },
-        data: { status }
+        data: updateData,
+        include: { order: true }
       });
 
       // Optionally sync order item statuses if needed
       await prisma.orderItem.updateMany({
         where: { kotId: id },
-        data: { status }
+        data: { 
+          status,
+          ...(status === 'ACCEPTED' && { 
+            prepTimeMinutes,
+            countdownStartedAt: new Date(),
+            estimatedCompletionTime: updateData.estimatedReadyTime 
+          })
+        }
       });
+
+      if (status === 'ACCEPTED') {
+        io.emit("timer-started", {
+          kotId: id,
+          orderId: kot.orderId,
+          estimatedReadyTime: updateData.estimatedReadyTime,
+          tableNumber: kot.order.tableNumber
+        });
+      }
 
       res.json(kot);
     } catch (error) {
@@ -1034,6 +1236,15 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Error handling middleware to catch parsing errors (like Payload Too Large)
+  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+    if (err.type === 'entity.too.large') {
+      return res.status(413).json({ error: "Payload too large. Please reduce the size of your import file." });
+    }
+    console.error("[Server Error]", err);
+    res.status(500).json({ error: "Internal server error" });
+  });
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

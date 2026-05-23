@@ -12,7 +12,10 @@ import {
   Check,
   History,
   Timer,
-  Trash2
+  Trash2,
+  CreditCard,
+  Banknote,
+  Building
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -55,6 +58,7 @@ export default function Dashboard() {
   const [recentOrders, setRecentOrders] = useState([]);
   const [waiterCalls, setWaiterCalls] = useState<any[]>([]);
   const [handledCalls, setHandledCalls] = useState<any[]>([]);
+  const [paymentRequests, setPaymentRequests] = useState<any[]>([]);
   const [isClearHistoryOpen, setIsClearHistoryOpen] = useState(false);
 
   // Persist socket connection
@@ -123,10 +127,22 @@ export default function Dashboard() {
     }
   };
 
+  const fetchPaymentRequests = async () => {
+    try {
+      const res = await fetch('/api/admin/payment-selections', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) setPaymentRequests(await res.json());
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   useEffect(() => {
     fetchData();
     fetchWaiterCalls();
     fetchHandledCalls();
+    fetchPaymentRequests();
 
     socket.on("waiter-requested", (call: any) => {
       setWaiterCalls(prev => [...prev, call]);
@@ -138,6 +154,27 @@ export default function Dashboard() {
 
     socket.on("waiter-call-handled", (call: any) => {
       setHandledCalls((prev: any[]) => [call, ...prev].slice(0, 10));
+    });
+
+    socket.on("payment-submitted", (data: any) => {
+      fetchData();
+      toast.success(`💳 Payment Submitted: Table ${data.tableNumber}`, {
+        description: `Method: ${data.method}. Please verify and confirm.`
+      });
+    });
+
+    socket.on("payment-method-updated", (selection: any) => {
+      setPaymentRequests(prev => {
+        const filtered = prev.filter(p => p.orderId !== selection.orderId);
+        return [...filtered, selection];
+      });
+      toast.info(`💰 ${selection.tableNumber} selected ${selection.method}`, {
+        description: `Order #${selection.orderId.slice(0, 5)}`
+      });
+    });
+
+    socket.on("payment-method-cleared", (orderId: string) => {
+      setPaymentRequests(prev => prev.filter(p => p.orderId !== orderId));
     });
 
     socket.on("waiter-history-cleared", () => {
@@ -185,6 +222,12 @@ export default function Dashboard() {
     toast.success("Waiter request handled");
   };
 
+  const getMethodIcon = (method: string) => {
+    if (method === 'TRANSFER') return <Building size={20} />;
+    if (method === 'CASH') return <Banknote size={20} />;
+    return <CreditCard size={20} />;
+  };
+
   const clearHistory = () => {
     socket.emit("clear-waiter-history");
     toast.success("Waiter history cleared");
@@ -218,6 +261,38 @@ export default function Dashboard() {
                   <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full hover:bg-emerald-100 hover:text-emerald-600" onClick={() => dismissWaiterCall(call.id)}>
                     <Check size={18} />
                   </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Active Payment Requests */}
+      {paymentRequests.length > 0 && (
+        <div className="space-y-4">
+          <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2 px-1">
+            <CreditCard className="text-emerald-500" size={20} />
+            Payment Notifications ({paymentRequests.length})
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {paymentRequests.map((req) => (
+              <Card key={req.id} className="border-none shadow-md bg-emerald-50/50 border-l-4 border-emerald-400">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-600">
+                        {getMethodIcon(req.method)}
+                      </div>
+                      <div>
+                        <p className="font-bold text-slate-900">{req.tableNumber}</p>
+                        <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">
+                          {req.method} Selected
+                        </p>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-slate-400 font-mono">#{req.orderId.slice(0, 5)}</p>
+                  </div>
                 </CardContent>
               </Card>
             ))}

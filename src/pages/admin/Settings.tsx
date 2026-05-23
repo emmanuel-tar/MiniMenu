@@ -50,11 +50,18 @@ export default function Settings() {
   });
   const [company, setCompany] = useState({
     name: '',
-    currency: 'USD',
+    currency: 'NGN',
+    secondaryCurrency: '',
+    exchangeRate: 1.0,
     taxRate: 0,
+    enableServiceCharge: false,
+    serviceChargeRate: 0,
     contactEmail: '',
     phone: '',
-    address: ''
+    address: '',
+    bankName: '',
+    accountName: '',
+    accountNumber: ''
   });
 
   useEffect(() => {
@@ -98,7 +105,9 @@ export default function Settings() {
         body: JSON.stringify(company),
       });
       if (res.ok) {
-        toast.success('Company settings updated');
+        const updated = await res.json();
+        setCompany(updated);
+        toast.success('Restaurant profile updated');
       } else {
         toast.error('Failed to update settings');
       }
@@ -203,8 +212,23 @@ export default function Settings() {
                   <Label>Currency Symbol</Label>
                   <div className="relative">
                     <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                    <Input value={company.currency} onChange={e => setCompany({...company, currency: e.target.value})} className="pl-10 rounded-xl border-slate-200" />
+                    <Input value={company.currency} onChange={e => setCompany({...company, currency: e.target.value})} placeholder="NGN" className="pl-10 rounded-xl border-slate-200" />
                   </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Secondary Currency (Optional)</Label>
+                  <div className="relative">
+                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <Input value={company.secondaryCurrency || ''} onChange={e => setCompany({...company, secondaryCurrency: e.target.value})} placeholder="USD" className="pl-10 rounded-xl border-slate-200" />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Exchange Rate (1 Primary = ? Secondary)</Label>
+                  <div className="relative">
+                    <Percent className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <Input type="number" step="0.0001" value={company.exchangeRate || 1} onChange={e => setCompany({...company, exchangeRate: parseFloat(e.target.value)})} className="pl-10 rounded-xl border-slate-200" />
+                  </div>
+                  <p className="text-[10px] text-slate-400 italic">Example: 1 NGN = 0.00065 USD</p>
                 </div>
                 <div className="space-y-2">
                   <Label>Tax Rate (%)</Label>
@@ -212,6 +236,32 @@ export default function Settings() {
                     <Percent className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                     <Input type="number" value={company.taxRate} onChange={e => setCompany({...company, taxRate: parseFloat(e.target.value)})} className="pl-10 rounded-xl border-slate-200" />
                   </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Enable Service Charge</Label>
+                  <div className="flex items-center space-x-2 h-10">
+                    <Switch checked={company.enableServiceCharge} onCheckedChange={checked => setCompany({...company, enableServiceCharge: checked})} />
+                    <span className="text-xs text-slate-500">{company.enableServiceCharge ? 'Active' : 'Inactive'}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Service Charge (%)</Label>
+                  <div className="relative">
+                    <Percent className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <Input type="number" value={company.serviceChargeRate} onChange={e => setCompany({...company, serviceChargeRate: parseFloat(e.target.value) || 0})} className="pl-10 rounded-xl border-slate-200" />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Bank Name</Label>
+                  <Input value={company.bankName || ''} onChange={e => setCompany({...company, bankName: e.target.value})} placeholder="e.g. Zenith Bank" className="rounded-xl border-slate-200" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Account Name</Label>
+                  <Input value={company.accountName || ''} onChange={e => setCompany({...company, accountName: e.target.value})} placeholder="e.g. Silver Grill Restaurant" className="rounded-xl border-slate-200" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Account Number</Label>
+                  <Input value={company.accountNumber || ''} onChange={e => setCompany({...company, accountNumber: e.target.value})} placeholder="0123456789" className="rounded-xl border-slate-200" />
                 </div>
                 <div className="md:col-span-2 pt-4">
                   <Button disabled={loading} className="px-8 bg-slate-900 rounded-xl h-12"><Save className="mr-2" size={18} /> Save Changes</Button>
