@@ -26,10 +26,11 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Plus, LayoutGrid, QrCode, ExternalLink, Printer, Download, Upload } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn } from '@/src/lib/utils';
 import { toast } from 'sonner';
 import { useAuth } from '@/src/hooks/useAuth';
 import { QRCodeSVG } from 'qrcode.react';
+import { io } from 'socket.io-client';
 
 export default function TableManagement() {
   const { token } = useAuth();
@@ -49,7 +50,13 @@ export default function TableManagement() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+    const socket = io();
+    
+    socket.on('table-status-updated', fetchData);
+    socket.on('new-order-received', fetchData);
+
+    return () => { socket.disconnect(); };
+  }, [token]);
 
   const handleAddTable = async () => {
     if (!newTableName) return;

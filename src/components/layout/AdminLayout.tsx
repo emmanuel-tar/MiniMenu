@@ -28,10 +28,15 @@ export default function AdminLayout() {
     const bellSound = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
     bellSound.volume = 0.5;
     
-    socket.on('waiter-requested', (data) => {
+    socket.on('waiter-requested', (data: { id: string; tableName: string; reason: string }) => {
       bellSound.play().catch(error => console.log("Audio playback failed:", error));
-      toast.info(`🔔 Waiter requested at ${data.tableName}`, {
-        duration: 8000,
+      toast.warning(`🔔 Service Requested: ${data.tableName}`, {
+        description: `Reason: ${data.reason}`,
+        duration: 15000, // Make it stay longer for visibility
+        action: {
+          label: 'Dismiss',
+          onClick: () => socket.emit("dismiss-waiter-call", data.id)
+        }
       });
     });
 
@@ -41,7 +46,8 @@ export default function AdminLayout() {
   const menuItems = [
     { name: 'Dashboard', path: '/admin', icon: LayoutDashboard },
     { name: 'Orders', path: '/admin/orders', icon: ClipboardList },
-    { name: 'Table Management', path: '/admin/tables', icon: LayoutGrid },
+    { name: 'Table Status', path: '/admin/table-status', icon: LayoutGrid },
+    { name: 'Table Management', path: '/admin/tables', icon: Menu },
     { name: 'Menu', path: '/admin/menu', icon: UtensilsCrossed },
     { name: 'Inventory', path: '/admin/inventory', icon: Package },
     { name: 'Settings', path: '/admin/settings', icon: SettingsIcon },

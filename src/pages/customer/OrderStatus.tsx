@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { io } from 'socket.io-client';
-import { motion } from 'motion/react';
+import { motion } from 'framer-motion';
 import { 
   Clock, 
   ChefHat, 
@@ -13,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 
 export default function OrderStatus() {
   const { orderId } = useParams();
@@ -122,8 +123,4 @@ export default function OrderStatus() {
       </main>
     </div>
   );
-}
-
-function cn(...inputs: any[]) {
-  return inputs.filter(Boolean).join(' ');
 }

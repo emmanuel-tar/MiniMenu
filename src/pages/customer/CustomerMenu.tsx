@@ -33,10 +33,16 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '@/lib/utils';
+import { motion, AnimatePresence } from 'framer-motion';
+import { cn, formatPrice } from '@/src/lib/utils';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+
 
 export default function CustomerMenu() {
   const { tableId } = useParams();
@@ -51,6 +57,9 @@ export default function CustomerMenu() {
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [productQty, setProductQty] = useState(1);
   const [productNote, setProductNote] = useState('');
+  const [isCallWaiterDialogOpen, setIsCallWaiterDialogOpen] = useState(false);
+  const [selectedWaiterReason, setSelectedWaiterReason] = useState('Assistance'); // Default reason
+  const [customWaiterReason, setCustomWaiterReason] = useState('');
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
 
   const socket = useMemo(() => io(), []);
@@ -73,14 +82,20 @@ export default function CustomerMenu() {
       }
     };
     fetchData();
+
+    socket.on("menu-updated", fetchData);
+    return () => { socket.off("menu-updated"); };
   }, [tableId]);
 
-  const callWaiter = () => {
+  const callWaiter = (reason: string) => {
+    const finalReason = reason === 'Other' ? customWaiterReason || 'Assistance' : reason;
     socket.emit('call-waiter', { 
       tableId: tableId || 'WALK-IN', 
-      tableName: table?.name || `Table ${tableId || 'Anonymous'}` 
+      tableName: table?.name || `Table ${tableId || 'Anonymous'}`,
+      reason: finalReason
     });
-    toast.success('Waiter called. Someone will be with you shortly!');
+    toast.success(`Waiter called for: ${finalReason}. Someone will be with you shortly!`);
+    setIsCallWaiterDialogOpen(false);
   };
 
   const handleAddToCart = (product: any, qty: number, note?: string) => {
@@ -159,8 +174,11 @@ export default function CustomerMenu() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" onClick={callWaiter} className="rounded-2xl border-slate-200 h-10 w-10">
+            <Button variant="outline" size="icon" onClick={() => setIsCallWaiterDialogOpen(true)} className="rounded-2xl border-slate-200 h-10 w-10">
               <Bell size={20} className="text-slate-600" />
+            </Button>
+            <Button variant="outline" size="icon" onClick={() => navigate(`/order/${lastOrderId}`)} className="rounded-2xl border-slate-200 h-10 w-10">
+              <ShoppingCart size={20} className="text-slate-600" />
             </Button>
             <div className="p-2 bg-slate-900 rounded-2xl text-white">
               <ShoppingBag size={20} />
@@ -221,7 +239,7 @@ export default function CustomerMenu() {
                     <h4 className="font-bold text-slate-900">{product.name}</h4>
                     <p className="text-xs text-slate-500 line-clamp-2 mt-0.5">{product.description}</p>
                     <div className="flex items-center justify-between mt-3">
-                      <span className="font-bold text-slate-900">${product.price.toFixed(2)}</span>
+                      <span className="font-bold text-slate-900">{formatPrice(product.price, company?.currency).primary}</span>
                       <div className="h-8 w-8 rounded-full bg-slate-900 flex items-center justify-center text-white">
                         <Plus size={16} />
                       </div>
@@ -248,7 +266,7 @@ export default function CustomerMenu() {
               <div className="p-8 flex flex-col flex-1 overflow-y-auto">
                 <div className="flex justify-between items-start mb-4">
                   <h2 className="text-2xl font-bold text-slate-900">{selectedProduct.name}</h2>
-                  <span className="text-xl font-bold text-slate-900">${selectedProduct.price.toFixed(2)}</span>
+                  <span className="text-xl font-bold text-slate-900">{formatPrice(selectedProduct.price, company?.currency).primary}</span>
                 </div>
                 <p className="text-slate-500 mb-8 leading-relaxed">{selectedProduct.description}</p>
                 
@@ -281,12 +299,64 @@ export default function CustomerMenu() {
                     onClick={() => handleAddToCart(selectedProduct, productQty, productNote)}
                   >
                     <span>Add to Cart</span>
-                    <span>${(selectedProduct.price * productQty).toFixed(2)}</span>
+                    <span>{formatPrice(selectedProduct.price * productQty, company?.currency).primary}</span>
                   </Button>
                 </div>
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Call Waiter Dialog */}
+      <Dialog open={isCallWaiterDialogOpen} onOpenChange={setIsCallWaiterDialogOpen}>
+        <DialogContent className="max-w-sm rounded-3xl border-none">
+          <DialogHeader>
+            <DialogTitle className="text-2xl font-bold">Call a Waiter</DialogTitle>
+            <DialogDescription>
+              Let us know how we can assist you at Table {table?.name || `Table ${tableId || 'Anonymous'}`}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <RadioGroup 
+              onValueChange={setSelectedWaiterReason} 
+              defaultValue={selectedWaiterReason} 
+              className="grid grid-cols-2 gap-3"
+            >
+              {[
+                { value: 'Assistance', label: 'General Assistance' },
+                { value: 'Need Water', label: 'Need Water' },
+                { value: 'Need Bill', label: 'Need Bill' },
+                { value: 'Clean Table', label: 'Clean Table' },
+              ].map((option) => (
+                <div key={option.value} className="flex items-center space-x-2 border rounded-xl p-3">
+                  <RadioGroupItem value={option.value} id={option.value} />
+                  <Label htmlFor={option.value} className="text-base font-medium">{option.label}</Label>
+                </div>
+              ))}
+               <div className="flex items-center space-x-2 border rounded-xl p-3">
+                <RadioGroupItem value="Other" id="Other" />
+                <Label htmlFor="Other" className="text-base font-medium">Other</Label>
+              </div>
+            </RadioGroup>
+            {selectedWaiterReason === 'Other' && (
+              <Input 
+                placeholder="Please specify your request"
+                value={customWaiterReason}
+                onChange={(e) => setCustomWaiterReason(e.target.value)}
+                className="rounded-xl mt-3"
+              />
+            )}
+          </div>
+          <DialogFooter>
+            <Button 
+              onClick={() => callWaiter(selectedWaiterReason)} 
+              className="w-full bg-slate-900 rounded-xl h-12 font-bold"
+              disabled={selectedWaiterReason === 'Other' && customWaiterReason.trim() === ''}
+            >
+              Send Request
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -308,7 +378,7 @@ export default function CustomerMenu() {
                     </div>
                     <span className="font-bold">View Cart</span>
                   </div>
-                  <span className="font-bold text-lg">${cartTotal.toFixed(2)}</span>
+                  <span className="font-bold text-lg">{cartTotal.primary}</span>
                 </div>
               </SheetTrigger>
               <SheetContent side="bottom" className="rounded-t-[2.5rem] p-8 h-[80vh] border-none shadow-2xl">
@@ -331,7 +401,7 @@ export default function CustomerMenu() {
                         <div>
                           <p className="font-bold text-slate-900">{item.name}</p>
                           {item.note && <p className="text-[10px] text-amber-600 italic">"{item.note}"</p>}
-                          <p className="text-xs text-slate-500 mt-0.5">${(item.price * item.quantity).toFixed(2)}</p>
+                          <p className="text-xs text-slate-500 mt-0.5">{formatPrice(item.price * item.quantity, company?.currency).primary}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -349,7 +419,7 @@ export default function CustomerMenu() {
                 <div className="pt-6 border-t border-slate-100 space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="text-slate-400 font-medium">Subtotal</span>
-                    <span className="font-bold text-slate-900 text-lg">${cartTotal.toFixed(2)}</span>
+                    <span className="font-bold text-slate-900 text-lg">{cartTotal.primary}</span>
                   </div>
                   <Button onClick={placeOrder} className="w-full bg-slate-900 rounded-3xl py-8 text-lg font-bold">
                     Confirm Order

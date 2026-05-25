@@ -19,6 +19,9 @@ model User {
   updatedAt DateTime           @updatedAt
   stationId String?
   station   ProductionStation? @relation(fields: [stationId], references: [id])
+  auditLogs AuditLog[]
+  settingAudits SettingAudit[]
+  orders    Order[]            @relation("OrderWaiter")
 }
 
 model Company {
@@ -106,6 +109,28 @@ model ReceiptSetting {
   company    Company  @relation(fields: [companyId], references: [id])
 }
 
+model SystemSetting {
+  id          String   @id @default(uuid())
+  category    String   // e.g., "payment", "feature_toggle", "operations"
+  key         String   @unique
+  value       String
+  type        String   // "string", "number", "boolean", "json"
+  description String?
+  editable    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model SettingAudit {
+  id         String   @id @default(uuid())
+  userId     String
+  settingKey String
+  oldValue   String?
+  newValue   String
+  changedAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+}
+
 model Product {
   id              String            @id @default(uuid())
   name            String            @unique
@@ -115,17 +140,17 @@ model Product {
   available       Boolean           @default(true)
   sku             String?           @unique
   barcode         String?           @unique
-  categoryId      String
-  groupId         String
-  stationId       String
+  categoryId      String?
+  groupId         String?
+  stationId       String?
   inventoryItemId String?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
   orderItems      OrderItem[]
   inventoryItem   InventoryItem?    @relation(fields: [inventoryItemId], references: [id])
-  station         ProductionStation @relation(fields: [stationId], references: [id])
-  group           ProductGroup      @relation(fields: [groupId], references: [id])
-  category        Category          @relation(fields: [categoryId], references: [id])
+  station         ProductionStation? @relation(fields: [stationId], references: [id])
+  group           ProductGroup?      @relation(fields: [groupId], references: [id])
+  category        Category?          @relation(fields: [categoryId], references: [id])
 }
 
 model InventoryItem {
@@ -153,9 +178,19 @@ model StockLog {
   inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
 }
 
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  module    String
+  details   String?
+  timestamp DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+}
+
 model Payment {
   id            String   @id @default(uuid())
-  orderId       String   @unique
+  orderId       String
   method        String   // CASH, POS, TRANSFER, CARD, ONLINE
   amount        Float
   status        String   @default("PENDING") // PENDING, SUBMITTED, SUCCESS, REJECTED
@@ -169,11 +204,26 @@ model Payment {
 model Table {
   id        String   @id @default(uuid())
   name      String
+  capacity  Int      @default(4)
   status    String   @default("AVAILABLE")
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   orders    Order[]
+  reservations Reservation[]
+}
+
+model Reservation {
+  id              String   @id @default(uuid())
+  customerName    String
+  phone           String
+  tableId         String?
+  table           Table?   @relation(fields: [tableId], references: [id])
+  reservationTime DateTime
+  guests          Int
+  status          String   @default("CONFIRMED") // PENDING, CONFIRMED, SEATED, CANCELLED, NO_SHOW
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model Order {
@@ -182,6 +232,12 @@ model Order {
   tableNumber        String?
   status             String      @default("PENDING")
   totalAmount        Float
+  taxAmount          Float       @default(0)
+  serviceChargeAmount Float      @default(0)
+  discountAmount     Float       @default(0)
+  guestCount         Int         @default(1)
+  waiterId           String?
+  waiter             User?       @relation("OrderWaiter", fields: [waiterId], references: [id])
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
@@ -191,7 +247,7 @@ model Order {
 
   kots               KOT[]
   items              OrderItem[]
-  payment            Payment?
+  payments           Payment[]
   table              Table?      @relation(fields: [tableId], references: [id])
 }
 

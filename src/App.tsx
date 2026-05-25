@@ -9,6 +9,7 @@ import Settings from './pages/admin/Settings';
 import Inventory from './pages/admin/Inventory';
 import Orders from './pages/admin/Orders';
 import TableManagement from './pages/admin/TableManagement';
+import TableStatus from './pages/admin/TableStatus';
 import CustomerMenu from './pages/customer/CustomerMenu';
 import OrderStatus from './pages/customer/OrderStatus';
 import KOTPrinter from './pages/admin/KOTPrinter';
@@ -42,6 +43,7 @@ export default function App() {
           }>
             <Route index element={<Dashboard />} />
             <Route path="orders" element={<Orders />} />
+            <Route path="table-status" element={<TableStatus />} />
             <Route path="tables" element={<TableManagement />} />
             <Route path="menu" element={<MenuManagement />} />
             <Route path="inventory" element={<Inventory />} />

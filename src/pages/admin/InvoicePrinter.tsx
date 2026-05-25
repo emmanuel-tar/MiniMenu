@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { toast } from 'sonner';
+import { useAuth } from '@/src/hooks/useAuth';
 
 interface PrintableInvoice {
   orderId: string;
@@ -17,17 +18,35 @@ interface PrintableInvoice {
 
 const InvoicePrinter: React.FC = () => {
   const socketRef = useRef<Socket | null>(null);
+  const { token } = useAuth();
 
   useEffect(() => {
     socketRef.current = io();
 
-    socketRef.current.on("print-invoice", (invoice: PrintableInvoice) => {
+    socketRef.current.on("print-invoice", async (invoice: PrintableInvoice) => {
       console.log("[InvoicePrinter] Received Invoice:", invoice);
       if (invoice.printer.type === 'BROWSER') {
         handleBrowserPrint(invoice);
       } else if (invoice.printer.type === 'NETWORK') {
-        toast.info(`Invoice #${invoice.orderId.slice(0, 5)} sent to ${invoice.printer.name}`);
-        // Integration point for local print proxy (e.g. Electron or Python script)
+        try {
+          const res = await fetch('/api/print/network', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(invoice)
+          });
+          
+          if (res.ok) {
+            toast.success(`Invoice printed to ${invoice.printer.name}`);
+          } else {
+            const err = await res.json();
+            toast.error(err.error || 'Network print failed');
+          }
+        } catch (err) {
+          toast.error('Could not reach print proxy');
+        }
       }
     });
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { toast } from 'sonner';
+import { useAuth } from '@/src/hooks/useAuth';
 
 interface PrintableKotItem {
   quantity: number;
@@ -26,20 +27,35 @@ interface PrintableKot {
 
 const KOTPrinter: React.FC = () => {
   const socketRef = useRef<Socket | null>(null);
+  const { token } = useAuth();
 
   useEffect(() => {
     socketRef.current = io();
 
-    socketRef.current.on("print-kot", (kot: PrintableKot) => {
+    socketRef.current.on("print-kot", async (kot: PrintableKot) => {
       console.log("[KOTPrinter] Received KOT for printing:", kot);
       if (kot.printer.type === 'BROWSER') {
         handleBrowserPrint(kot);
       } else if (kot.printer.type === 'NETWORK') {
-        // For network printers, you'd typically send this to a local print server
-        // or an Electron app that can communicate with the printer directly.
-        // For now, we'll just log it and show a toast.
-        toast.info(`KOT for ${kot.stationName} sent to network printer: ${kot.printer.name}`);
-        console.log(`[KOTPrinter] Simulating network print for KOT ${kot.kotId} to ${kot.printer.ipAddress}:${kot.printer.port}`);
+        try {
+          const res = await fetch('/api/print/network', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(kot)
+          });
+          
+          if (res.ok) {
+            toast.success(`KOT printed to ${kot.printer.name}`);
+          } else {
+            const err = await res.json();
+            toast.error(err.error || 'Network print failed');
+          }
+        } catch (err) {
+          toast.error('Could not reach print proxy');
+        }
       } else {
         toast.warning(`Unsupported printer type for KOT: ${kot.printer.type}`);
       }

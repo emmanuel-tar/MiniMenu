@@ -12,10 +12,12 @@ import {
   Check,
   History,
   Timer,
+  Printer,
   Trash2,
   CreditCard,
   Banknote,
-  Building
+  Building,
+  Receipt
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -44,7 +46,7 @@ import {
   SelectValue 
 } from '@/components/ui/select';
 import { useAuth } from '@/src/hooks/useAuth';
-import { cn } from '@/lib/utils';
+import { cn } from '@/src/lib/utils';
 import { toast } from 'sonner';
 
 export default function Dashboard() {
@@ -55,6 +57,7 @@ export default function Dashboard() {
     pendingOrders: 0,
     totalProducts: 0
   });
+  const [company, setCompany] = useState<any>(null);
   const [recentOrders, setRecentOrders] = useState([]);
   const [waiterCalls, setWaiterCalls] = useState<any[]>([]);
   const [handledCalls, setHandledCalls] = useState<any[]>([]);
@@ -63,6 +66,13 @@ export default function Dashboard() {
 
   // Persist socket connection
   const socket = useMemo(() => io(), []);
+
+  // Audio notification for settled payments (Positive Chime)
+  const settledSound = useMemo(() => {
+    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3');
+    audio.volume = 0.4;
+    return audio;
+  }, []);
 
   const avgResponseTime = useMemo(() => {
     if (handledCalls.length === 0) return '0s';
@@ -87,9 +97,12 @@ export default function Dashboard() {
       });
       const orderData = await orderRes.json();
       
+      const companyRes = await fetch('/api/company');
+      if (companyRes.ok) setCompany(await companyRes.json());
+
       const pending = orderData.filter((o: any) => o.status === 'PENDING').length;
       const active = orderData.filter((o: any) => ['ACCEPTED', 'PREPARING', 'READY'].includes(o.status)).length;
-      const sales = orderData.reduce((acc: number, o: any) => acc + o.totalAmount, 0);
+      const sales = orderData.filter((o: any) => o.status === 'PAID' || o.status === 'COMPLETED').reduce((acc: number, o: any) => acc + o.totalAmount, 0);
 
       setStats({
         totalSales: sales,
@@ -174,6 +187,7 @@ export default function Dashboard() {
     });
 
     socket.on("payment-method-cleared", (orderId: string) => {
+      settledSound.play().catch(error => console.log("Audio playback failed:", error));
       setPaymentRequests(prev => prev.filter(p => p.orderId !== orderId));
     });
 
@@ -183,7 +197,7 @@ export default function Dashboard() {
 
     socket.on("new-order-received", (order: any) => {
       fetchData(); // Immediate refresh of stats and recent orders table
-      toast.success(`🔔 New Order! Table ${order.tableNumber} - $${order.totalAmount.toFixed(2)}`, {
+      toast.success(`🔔 New Order! Table ${order.tableNumber} - ${company?.currency || 'NGN'}${order.totalAmount.toLocaleString()}`, {
         description: `Order #${order.id.slice(0, 5)}`,
         duration: 5000,
       });
@@ -225,6 +239,7 @@ export default function Dashboard() {
   const getMethodIcon = (method: string) => {
     if (method === 'TRANSFER') return <Building size={20} />;
     if (method === 'CASH') return <Banknote size={20} />;
+    if (method === 'BILL REQUEST') return <Receipt size={20} />;
     return <CreditCard size={20} />;
   };
 
@@ -232,6 +247,16 @@ export default function Dashboard() {
     socket.emit("clear-waiter-history");
     toast.success("Waiter history cleared");
     setIsClearHistoryOpen(false);
+  };
+
+  const handlePrintBill = (orderId: string) => {
+    socket.emit("request-bill", { orderId });
+    toast.success("Printing request sent to cashier");
+  };
+
+  const dismissPaymentRequest = (orderId: string) => {
+    socket.emit("dismiss-payment-selection", orderId);
+    toast.success("Payment notification cleared");
   };
 
   return (
@@ -253,6 +278,9 @@ export default function Dashboard() {
                     </div>
                     <div>
                       <p className="font-bold text-slate-900">{call.tableName}</p>
+                      <p className="text-xs font-semibold text-amber-600 bg-amber-100/50 px-2 py-0.5 rounded-lg w-fit mt-0.5">
+                        {call.reason}
+                      </p>
                       <p className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">
                         Requested {new Date(call.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
@@ -276,26 +304,68 @@ export default function Dashboard() {
             Payment Notifications ({paymentRequests.length})
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {paymentRequests.map((req) => (
-              <Card key={req.id} className="border-none shadow-md bg-emerald-50/50 border-l-4 border-emerald-400">
+            {paymentRequests.map((req) => {
+              const isBillRequest = req.method === 'BILL REQUEST';
+              return (
+                <Card 
+                  key={req.id} 
+                  className={cn(
+                    "border-none shadow-md border-l-4",
+                    isBillRequest 
+                      ? "bg-blue-50 border-blue-500 animate-pulse shadow-blue-100" 
+                      : "bg-emerald-50/50 border-amber-400"
+                  )}
+                >
                 <CardContent className="p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-600">
-                        {getMethodIcon(req.method)}
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "w-10 h-10 rounded-xl flex items-center justify-center",
+                          isBillRequest ? "bg-blue-100 text-blue-600" : "bg-emerald-100 text-emerald-600"
+                        )}>
+                          {getMethodIcon(req.method)}
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-900">{req.tableNumber}</p>
+                          <p className={cn(
+                            "text-[10px] font-bold uppercase tracking-wider",
+                            isBillRequest ? "text-blue-600" : "text-emerald-600"
+                          )}>
+                            {isBillRequest ? 'Bill Requested' : `${req.method} Selected`}
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="font-bold text-slate-900">{req.tableNumber}</p>
-                        <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">
-                          {req.method} Selected
-                        </p>
+                      <div className="flex flex-col items-end gap-1">
+                        <p className="text-[10px] text-slate-400 font-mono">#{req.orderId.slice(0, 5)}</p>
+                        <Button 
+                          size="icon" 
+                          variant="ghost" 
+                          className="h-7 w-7 rounded-full hover:bg-emerald-100 hover:text-emerald-600" 
+                          onClick={() => dismissPaymentRequest(req.orderId)}
+                          title="Dismiss notification"
+                        >
+                          <Check size={16} />
+                        </Button>
                       </div>
                     </div>
-                    <p className="text-[10px] text-slate-400 font-mono">#{req.orderId.slice(0, 5)}</p>
+
+                    {isBillRequest && (
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="h-8 rounded-lg bg-white border-blue-200 text-blue-600 hover:bg-blue-50 font-bold text-[10px] gap-2 w-full"
+                        onClick={() => handlePrintBill(req.orderId)}
+                      >
+                        <Printer size={14} />
+                        PRINT BILL
+                      </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -363,12 +433,12 @@ export default function Dashboard() {
       {/* Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
         {React.useMemo(() => [
-          { title: 'Total Sales', value: `$${stats.totalSales.toFixed(2)}`, icon: TrendingUp, delta: '+12.5%', color: 'text-emerald-600', bg: 'bg-emerald-50' },
+          { title: 'Total Sales', value: `${company?.currency || 'NGN'}${stats.totalSales.toLocaleString()}`, icon: TrendingUp, delta: '+12.5%', color: 'text-emerald-600', bg: 'bg-emerald-50' },
           { title: 'Active Orders', value: stats.activeOrders.toString(), icon: ShoppingBag, delta: '+2', color: 'text-blue-600', bg: 'bg-blue-50' },
           { title: 'Pending Orders', value: stats.pendingOrders.toString(), icon: Clock, delta: '-1', color: 'text-amber-600', bg: 'bg-amber-50' },
           { title: 'Avg Response', value: avgResponseTime, icon: Timer, delta: '-12%', color: 'text-rose-600', bg: 'bg-rose-50' },
           { title: 'Total Products', value: stats.totalProducts.toString(), icon: Users, delta: '0', color: 'text-indigo-600', bg: 'bg-indigo-50' },
-        ], [stats, avgResponseTime]).map((card) => (
+        ], [stats, avgResponseTime, company]).map((card) => (
           <Card key={card.title} className="border-none shadow-sm hover:shadow-md transition-shadow duration-300">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-slate-500">{card.title}</CardTitle>
@@ -420,7 +490,7 @@ export default function Dashboard() {
                   </TableCell>
                   <TableCell>
                     <Select 
-                      defaultValue={order.status} 
+                      value={order.status} 
                       onValueChange={(val) => updateOrderStatus(order.id, val)}
                     >
                       <SelectTrigger className="h-8 w-32 border-none bg-slate-50 rounded-lg text-[10px] font-bold uppercase">
@@ -440,7 +510,7 @@ export default function Dashboard() {
                     {order.items.length} items
                   </TableCell>
                   <TableCell className="text-right font-bold text-slate-900">
-                    ${order.totalAmount.toFixed(2)}
+                    {company?.currency || 'NGN'}{order.totalAmount.toLocaleString()}
                   </TableCell>
                 </TableRow>
               ))}

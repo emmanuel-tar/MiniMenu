@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { useRouter } from 'next/router';
+import { useParams } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
 import {
   ChefHat,
@@ -10,7 +10,7 @@ import {
   Ban,
   Coffee,
   Hourglass,
-  Timer as TimerIcon // Renamed to avoid conflict with Timer component
+  Timer as TimerIcon,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -19,13 +19,13 @@ import { cn } from '@/lib/utils';
 
 // Re-using status icons and colors
 const STATUS_COLORS: Record<string, string> = {
-  PENDING: "bg-amber-100 text-amber-700 border-amber-200",
-  ACCEPTED: "bg-blue-100 text-blue-700 border-blue-200",
-  PREPARING: "bg-indigo-100 text-indigo-700 border-indigo-200",
-  READY: "bg-emerald-100 text-emerald-700 border-emerald-200",
-  PAID: "bg-purple-100 text-purple-700 border-purple-200",
-  COMPLETED: "bg-slate-100 text-slate-500 border-slate-200",
-  CANCELLED: "bg-red-100 text-red-700 border-red-200",
+  PENDING: 'bg-amber-100 text-amber-700 border-amber-200',
+  ACCEPTED: 'bg-blue-100 text-blue-700 border-blue-200',
+  PREPARING: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  READY: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  PAID: 'bg-purple-100 text-purple-700 border-purple-200',
+  COMPLETED: 'bg-slate-100 text-slate-500 border-slate-200',
+  CANCELLED: 'bg-red-100 text-red-700 border-red-200',
 };
 
 const STATUS_ICONS: Record<string, any> = {
@@ -62,9 +62,7 @@ const ItemCountdownDisplay = ({ item }: { item: OrderItem }) => {
   const [progress, setProgress] = useState<number>(0);
 
   useEffect(() => {
-    if (!item.estimatedCompletionTime || !item.countdownStartedAt || !item.prepTimeMinutes) {
-      return;
-    }
+    if (!item.estimatedCompletionTime || !item.countdownStartedAt || !item.prepTimeMinutes) return;
 
     const totalPrepTimeMs = item.prepTimeMinutes * 60 * 1000;
     const startTimeMs = new Date(item.countdownStartedAt).getTime();
@@ -85,15 +83,19 @@ const ItemCountdownDisplay = ({ item }: { item: OrderItem }) => {
       }
     };
 
-    calculate(); // Initial calculation
+    calculate();
     const timer = setInterval(calculate, 1000);
-
     return () => clearInterval(timer);
   }, [item.estimatedCompletionTime, item.countdownStartedAt, item.prepTimeMinutes, item.status]);
 
   const mins = Math.floor(timeLeft / 60);
   const secs = timeLeft % 60;
-  const colorClass = timeLeft > 300 ? "text-emerald-500" : timeLeft > 0 ? "text-amber-500" : "text-rose-500 animate-pulse";
+  const colorClass =
+    timeLeft > 300
+      ? 'text-emerald-500'
+      : timeLeft > 0
+        ? 'text-amber-500'
+        : 'text-rose-500 animate-pulse';
   const Icon = STATUS_ICONS[item.status] || Hourglass;
 
   if (item.status === 'READY' || item.status === 'COMPLETED') {
@@ -105,12 +107,17 @@ const ItemCountdownDisplay = ({ item }: { item: OrderItem }) => {
     );
   }
 
-  if (item.prepTimeMinutes && item.countdownStartedAt && item.estimatedCompletionTime && (item.status === 'ACCEPTED' || item.status === 'PREPARING')) {
+  if (
+    item.prepTimeMinutes &&
+    item.countdownStartedAt &&
+    item.estimatedCompletionTime &&
+    (item.status === 'ACCEPTED' || item.status === 'PREPARING')
+  ) {
     return (
       <div className="w-full">
         <div className="flex items-center gap-2">
-          <TimerIcon size={14} className={cn("text-slate-500", timeLeft <= 0 && "text-rose-500")} />
-          <span className={cn("font-mono font-bold text-sm", colorClass)}>
+          <TimerIcon size={14} className={cn('text-slate-500', timeLeft <= 0 && 'text-rose-500')} />
+          <span className={cn('font-mono font-bold text-sm', colorClass)}>
             {timeLeft > 0 ? `${mins}m ${secs}s left` : 'Delayed'}
           </span>
         </div>
@@ -128,8 +135,7 @@ const ItemCountdownDisplay = ({ item }: { item: OrderItem }) => {
 };
 
 export default function TrackOrder() {
-  const router = useRouter();
-  const { orderId } = router.query;
+  const { orderId } = useParams<{ orderId: string }>();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -141,44 +147,43 @@ export default function TrackOrder() {
     if (!orderId) return;
     try {
       const res = await fetch(`/api/orders/${orderId}`);
-      if (!res.ok) {
-        throw new Error(`Order not found or API error: ${res.statusText}`);
-      }
+      if (!res.ok) throw new Error(`Order not found or API error: ${res.statusText}`);
       const data: Order = await res.json();
       setOrder(data);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch order details.');
-      console.error('Error fetching order:', err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (orderId) {
-      fetchOrder();
-      socket.emit("join-order", orderId);
+    if (!orderId) return;
 
-      socket.on("order-status-updated", (data: { status: string }) => {
-        setOrder(prev => prev ? { ...prev, status: data.status } : null);
-      });
+    fetchOrder();
+    socket.emit('join-order', orderId);
 
-      // Listen for timer updates for individual KOTs/items
-      socket.on("timer-started", (data: { orderId: string, kotId: string, estimatedReadyTime: string, tableNumber: string }) => {
-        if (data.orderId === orderId) {
-          fetchOrder(); // Refetch to get updated item-level timing data
-        }
-      });
+    const onStatusUpdated = (data: { status: string }) => {
+      setOrder((prev) => (prev ? { ...prev, status: data.status } : null));
+    };
 
-      // Consider more granular updates if needed, e.g., if a specific item is marked ready
-      // For now, refetching the whole order on `timer-started` is a simple approach.
+    const onTimerStarted = (data: {
+      orderId: string;
+      kotId: string;
+      estimatedReadyTime: string;
+      tableNumber: string;
+    }) => {
+      if (data.orderId === orderId) fetchOrder();
+    };
 
-      return () => {
-        socket.off("order-status-updated");
-        socket.off("timer-started");
-        socket.disconnect(); // Disconnect when component unmounts
-      };
-    }
+    socket.on('order-status-updated', onStatusUpdated);
+    socket.on('timer-started', onTimerStarted);
+
+    return () => {
+      socket.off('order-status-updated', onStatusUpdated);
+      socket.off('timer-started', onTimerStarted);
+      socket.disconnect();
+    };
   }, [orderId, socket]);
 
   if (loading) {
@@ -212,6 +217,7 @@ export default function TrackOrder() {
             Tracking for Table {order.tableNumber || 'WALK-IN'} - Order #{order.id.slice(0, 8)}
           </CardDescription>
         </CardHeader>
+
         <CardContent className="p-6 space-y-6">
           <div className="flex items-center justify-between p-4 rounded-xl border border-slate-100 bg-white shadow-sm">
             <div className="flex items-center gap-3">
@@ -220,7 +226,9 @@ export default function TrackOrder() {
               </div>
               <div>
                 <p className="font-bold text-xl text-slate-900">Order Status</p>
-                <Badge className={cn("text-xs font-bold uppercase mt-1", STATUS_COLORS[order.status])}>
+                <Badge
+                  className={cn('text-xs font-bold uppercase mt-1', STATUS_COLORS[order.status])}
+                >
                   {order.status.replace('_', ' ')}
                 </Badge>
               </div>
@@ -231,4 +239,27 @@ export default function TrackOrder() {
             </div>
           </div>
 
-          <div className="
+          <div className="space-y-3">
+            <h3 className="text-lg font-bold text-slate-900">Items</h3>
+            <div className="space-y-2">
+              {order.items.map((item) => (
+                <div key={item.id} className="p-4 rounded-2xl border border-slate-100 bg-white">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="font-bold text-slate-900">{item.productName}</p>
+                      <p className="text-sm text-slate-500">Qty: {item.quantity}</p>
+                    </div>
+                    <div className="min-w-[160px]">
+                      <ItemCountdownDisplay item={item} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+

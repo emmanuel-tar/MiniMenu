@@ -44,7 +44,7 @@ import {
   DialogFooter 
 } from '@/components/ui/dialog';
 import { useAuth } from '@/src/hooks/useAuth';
-import { cn } from '@/lib/utils';
+import { cn } from '@/src/lib/utils';
 import { toast } from 'sonner';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -164,6 +164,12 @@ export default function Orders() {
       const orderSound = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
       orderSound.volume = 0.5;
 
+      // Audio notification for paid orders (Cash Register sound)
+      const cashRegisterSound = new Audio('https://assets.mixkit.co/active_storage/sfx/107/107-preview.mp3'); // Example cash register sound
+      cashRegisterSound.volume = 0.6;
+
+
+
       socket.on("new-order-received", (order: any) => {
         orderSound.play().catch(error => console.log("Audio playback failed (interaction required):", error));
         toast.success(`🔔 New Order Received!`, {
@@ -175,6 +181,11 @@ export default function Orders() {
       socket.on("timer-started", (data: any) => {
         toast.info(`Timer started for Table ${data.tableNumber}`);
         fetchData();
+      });
+
+      socket.on("order-paid", (data: { orderId: string, tableNumber: string }) => {
+        cashRegisterSound.play().catch(error => console.log("Audio playback failed:", error));
+        toast.success(`Order Paid: Table ${data.tableNumber}`);
       });
 
       const interval = setInterval(fetchData, 10000);
@@ -216,12 +227,13 @@ export default function Orders() {
     const printWindow = window.open('', '_blank', 'width=400,height=600');
     if (!printWindow) return;
 
+    const subtotal = order.totalAmount;
     const taxRate = company?.taxRate || 0;
     const serviceRate = company?.enableServiceCharge ? (company?.serviceChargeRate || 0) : 0;
-    
-    const total = order.totalAmount;
-    const subtotal = total / (1 + (taxRate / 100) + (serviceRate / 100));
-    const taxAmount = total - subtotal;
+    const taxAmount = (subtotal * taxRate) / 100;
+    const serviceChargeAmount = (subtotal * serviceRate) / 100;
+    const grandTotal = subtotal + taxAmount + serviceChargeAmount;
+
     const primaryCurrency = company?.currency || 'NGN';
     const secondaryCurrency = company?.secondaryCurrency;
     const exchangeRate = company?.exchangeRate;
@@ -269,15 +281,20 @@ export default function Orders() {
               <span>VAT (${taxRate}%)</span>
               <span>${primaryCurrency}${taxAmount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
             </div>` : ''}
+            ${serviceChargeAmount > 0 ? `
+            <div className="row">
+              <span>Service Charge (${serviceRate}%)</span>
+              <span>${primaryCurrency}${serviceChargeAmount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+            </div>` : ''}
           </div>
           <div class="total">
             <span>Total</span>
-            <span>${primaryCurrency}${total.toLocaleString()}</span>
+            <span>${primaryCurrency}${grandTotal.toLocaleString()}</span>
           </div>
           ${showSecondaryCurrency ? `
           <div class="total" style="font-size: 14px; font-weight: normal; border-top: none; padding-top: 0;">
             <span></span>
-            <span>(${secondaryCurrency}${(total * exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2 })})</span>
+            <span>(${secondaryCurrency}${(grandTotal * exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2 })})</span>
           </div>` : ''}
           </div>
           <div class="footer">${footerText || 'Thank you for dining with us!'}</div>
@@ -552,6 +569,16 @@ export default function Orders() {
                           >
                             <Printer size={14} />
                           </Button>
+                          {!['CANCELLED', 'COMPLETED', 'PAID'].includes(order.status) && (
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              className="h-8 w-8 text-blue-500 hover:text-blue-600 hover:bg-blue-50"
+                              onClick={() => toast.info('Table Transfer functionality coming in next phase')}
+                            >
+                              <Truck size={14} />
+                            </Button>
+                          )}
                           {!['CANCELLED', 'COMPLETED', 'PAID'].includes(order.status) && (
                             <Button 
                               variant="ghost" 

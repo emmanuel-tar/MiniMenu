@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { 
-  Card, 
+  DragDropContext, Droppable, Draggable, DropResult
+} from 'react-beautiful-dnd';
+import { // These are your UI components
+  Card,
   CardContent, 
-  CardHeader, 
+  CardHeader,
   CardTitle,
   CardDescription 
 } from '@/components/ui/card';
@@ -27,7 +30,7 @@ import {
   Table, 
   TableBody, 
   TableCell, 
-  TableHead, 
+  TableHead,
   TableHeader, 
   TableRow 
 } from '@/components/ui/table';
@@ -35,7 +38,7 @@ import { Badge } from '@/components/ui/badge';
 import { Plus, Utensils, Tag, Layers, Search, Edit2, Download, Upload, Trash2, FileDown, FileUp, Image as ImageIcon, Eye, EyeOff, Copy, CheckCircle, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/src/hooks/useAuth';
-
+import { GripVertical } from 'lucide-react';
 export default function MenuManagement() {
   const { token } = useAuth();
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
@@ -68,6 +71,7 @@ export default function MenuManagement() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editingProduct, setEditingProduct] = useState<any>(null);
   const [editingCategory, setEditingCategory] = useState<any>(null);
+  const [isCategoryEditDialogOpen, setIsCategoryEditDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
   useEffect(() => {
@@ -254,6 +258,34 @@ export default function MenuManagement() {
     }
   };
   const toggleCategoryActive = async (id: string, active: boolean) => {
+    const cat = categories.find(c => c.id === id);
+    if (!cat) return;
+    try {
+      const res = await fetch(`/api/menu/categories/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ ...cat, active }), // Send all fields for update
+      });
+      if (res.ok) {
+        setCategories(categories.map(c => c.id === id ? { ...c, active } : c));
+        toast.success(`Category ${active ? 'activated' : 'deactivated'}`);
+      } else {
+        toast.error('Failed to update category status');
+      }
+    } catch (err) {
+      toast.error('Connection error');
+    }
+  };
+
+  const handleEditCategory = async () => {
+    if (!editingCategory.name) return;
+
+    let imageUrl = editingCategory.image;
+    if (categoryImage) {
+      const uploaded = await uploadImage(categoryImage);
+      if (uploaded) imageUrl = uploaded;
+    }
+
     try {
       const res = await fetch(`/api/menu/categories/${id}`, {
         method: 'PUT',
@@ -268,6 +300,56 @@ export default function MenuManagement() {
       }
     } catch (err) {
       toast.error('Connection error');
+    }
+    const res = await fetch(`/api/menu/categories/${editingCategory.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ ...editingCategory, image: imageUrl }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      setCategories(categories.map(c => c.id === data.id ? { ...c, ...data } : c));
+      setIsCategoryEditDialogOpen(false);
+      setEditingCategory(null);
+      setCategoryImage(null);
+      toast.success('Category updated');
+    } else {
+      toast.error('Failed to update category');
+    }
+  };
+
+  const onDragEnd = async (result: DropResult) => {
+    if (!result.destination) return;
+
+    const reorderedCategories = Array.from(categories);
+    const [removed] = reorderedCategories.splice(result.source.index, 1);
+    reorderedCategories.splice(result.destination.index, 0, removed);
+
+    const updatedOrder = reorderedCategories.map((cat, index) => ({
+      id: cat.id,
+      order: index,
+    }));
+
+    setCategories(reorderedCategories.map((cat, index) => ({ ...cat, order: index }))); // Optimistic update
+
+    try {
+      const res = await fetch('/api/menu/categories/reorder', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(updatedOrder),
+      });
+
+      if (!res.ok) {
+        toast.error('Failed to save new category order.');
+        // Revert to original order if API call fails
+        fetchData();
+      } else {
+        toast.success('Category order updated.');
+      }
+    } catch (error) {
+      toast.error('Network error while saving category order.');
+      fetchData(); // Revert on network error
     }
   };
 
@@ -669,7 +751,7 @@ export default function MenuManagement() {
                     <Button variant="ghost" size="icon" className="text-slate-400" onClick={() => toggleCategoryActive(category.id, !category.active)}>
                       {category.active ? <EyeOff size={16} /> : <Eye size={16} />}
                     </Button>
-                    <Button variant="ghost" size="icon" className="text-slate-400" onClick={() => { /* openEditCategoryDialog(category) */ }}>
+                    <Button variant="ghost" size="icon" className="text-slate-400" onClick={() => { setEditingCategory(category); setIsCategoryEditDialogOpen(true); }}>
                       <Edit2 size={16} />
                     </Button>
                   </TableCell>
@@ -917,6 +999,42 @@ export default function MenuManagement() {
             <Button onClick={handleEditProduct} disabled={uploading} className="col-span-2 bg-slate-900 mt-4 py-6">
               {uploading ? 'Uploading...' : 'Update Product'}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Category Dialog */}
+      <Dialog open={isCategoryEditDialogOpen} onOpenChange={setIsCategoryEditDialogOpen}>
+        <DialogContent className="rounded-2xl border-none">
+          <DialogHeader>
+            <DialogTitle>Edit Category</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Name</Label>
+              <Input 
+                value={editingCategory?.name || ''} 
+                onChange={e => setEditingCategory({...editingCategory, name: e.target.value})}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Description</Label>
+              <Input 
+                value={editingCategory?.description || ''} 
+                onChange={e => setEditingCategory({...editingCategory, description: e.target.value})}
+              />
+            </div>
+            {editingCategory?.image && (
+              <div className="space-y-2">
+                <Label>Current Image</Label>
+                <img src={editingCategory.image} alt="Category" className="w-24 h-24 object-cover rounded-lg" />
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label>Category Image</Label>
+              <Input type="file" accept="image/*" onChange={e => setCategoryImage(e.target.files?.[0] || null)} className="cursor-pointer" />
+            </div>
+            <Button onClick={handleEditCategory} className="w-full bg-slate-900">Update Category</Button>
           </div>
         </DialogContent>
       </Dialog>
