@@ -61,6 +61,8 @@ export default function CustomerMenu() {
   const [selectedWaiterReason, setSelectedWaiterReason] = useState('Assistance'); // Default reason
   const [customWaiterReason, setCustomWaiterReason] = useState('');
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
+  const [guestCount, setGuestCount] = useState(1);
+  const [isGuestDialogOpen, setIsGuestDialogOpen] = useState(false);
 
   const socket = useMemo(() => io(), []);
 
@@ -122,13 +124,14 @@ export default function CustomerMenu() {
 
   const cartTotal = cart.reduce((acc: number, item: any) => acc + (item.price * item.quantity), 0);
 
-  const placeOrder = async () => {
+  const handleFinalOrder = async () => {
     try {
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tableNumber: tableId || 'WALK-IN',
+          tableId: tableId || null,
+          guestCount: tableId ? guestCount : 1,
           items: cart.map(item => ({ productId: item.id, quantity: item.quantity, note: item.note }))
         }),
       });
@@ -140,6 +143,14 @@ export default function CustomerMenu() {
       }
     } catch (err) {
       toast.error('Could not place order');
+    }
+  };
+
+  const placeOrder = () => {
+    if (tableId && table?.status === 'AVAILABLE') {
+      setIsGuestDialogOpen(true);
+    } else {
+      handleFinalOrder();
     }
   };
 
@@ -355,6 +366,40 @@ export default function CustomerMenu() {
               disabled={selectedWaiterReason === 'Other' && customWaiterReason.trim() === ''}
             >
               Send Request
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Guest Count Dialog */}
+      <Dialog open={isGuestDialogOpen} onOpenChange={setIsGuestDialogOpen}>
+        <DialogContent className="max-w-sm rounded-3xl border-none">
+          <DialogHeader>
+            <DialogTitle className="text-2xl font-bold">Number of Guests</DialogTitle>
+            <DialogDescription>
+              How many people are dining at {table?.name || 'this table'}?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-6 flex flex-col items-center gap-6">
+            <div className="flex items-center justify-center gap-8 bg-slate-50 p-6 rounded-3xl w-full">
+              <Button variant="ghost" size="icon" className="h-12 w-12 rounded-full bg-white shadow-sm" onClick={() => setGuestCount(Math.max(1, guestCount - 1))}>
+                <Minus size={24} />
+              </Button>
+              <span className="text-3xl font-bold w-12 text-center">{guestCount}</span>
+              <Button variant="ghost" size="icon" className="h-12 w-12 rounded-full bg-white shadow-sm" onClick={() => setGuestCount(guestCount + 1)}>
+                <Plus size={24} />
+              </Button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              onClick={() => {
+                setIsGuestDialogOpen(false);
+                handleFinalOrder();
+              }} 
+              className="w-full bg-slate-900 rounded-2xl h-14 font-bold text-lg"
+            >
+              Confirm & Place Order
             </Button>
           </DialogFooter>
         </DialogContent>

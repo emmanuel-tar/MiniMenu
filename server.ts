@@ -160,18 +160,8 @@ async function startServer() {
   // Serve uploads statically
   app.use('/uploads', express.static(uploadsDir));
 
-  // In-memory storage for active waiter requests
-  // For production, this should be moved to a database table
-  const activeWaiterCalls: any[] = (globalThis as any).activeWaiterCalls ?? [];
-  (globalThis as any).activeWaiterCalls = activeWaiterCalls;
-
-  // In-memory storage for handled waiter calls
-  const handledWaiterCalls: any[] = (globalThis as any).handledWaiterCalls ?? [];
-  (globalThis as any).handledWaiterCalls = handledWaiterCalls;
-
-  // In-memory storage for active payment selections
-  const activePaymentSelections: any[] = (globalThis as any).activePaymentSelections ?? [];
-  (globalThis as any).activePaymentSelections = activePaymentSelections;
+  // DB-backed real-time state
+  const ACTIVE_TTL_MINUTES = 10;
 
   // Socket.IO Connection Logic
   io.on("connection", (socket: Socket) => {
@@ -181,17 +171,21 @@ async function startServer() {
     });
 
     // Handle waiter calls
-    socket.on("call-waiter", (data: { tableId: string; tableName: string; reason: string }) => {
-      const call = {
-        id: crypto.randomUUID(),
-        tableId: data.tableId,
-        tableName: data.tableName,
-        reason: data.reason || 'Assistance',
-        createdAt: new Date().toISOString(),
-      };
-      activeWaiterCalls.push(call);
-      console.log(`[Socket] Waiter called to table: ${call.tableName}`);
-      io.emit("waiter-requested", call);
+    socket.on("call-waiter", async (data: { tableId: string; tableName: string; reason: string }) => {
+      try {
+        const call = await prisma.waiterCall.create({
+          data: {
+            tableId: data.tableId,
+            tableName: data.tableName,
+            reason: data.reason || 'Assistance',
+            status: 'ACTIVE'
+          }
+        });
+        console.log(`[Socket] Waiter called to table: ${call.tableName}`);
+        io.emit("waiter-requested", call);
+      } catch (err) {
+        console.error("Socket Waiter Call Error:", err);
+      }
     });
 
     // Handle payment method selection from customer tracking page
@@ -205,16 +199,18 @@ async function startServer() {
 
         if (!order) return;
 
-      const selection = {
-        id: crypto.randomUUID(),
-        orderId: data.orderId,
-        method: data.method,
-        tableNumber: order.tableNumber || 'Walk-in',
-      };
-
-      const existingIndex = activePaymentSelections.findIndex(s => s.orderId === data.orderId);
-      if (existingIndex !== -1) activePaymentSelections.splice(existingIndex, 1);
-      activePaymentSelections.push(selection);
+      const selection = await prisma.paymentSelection.upsert({
+        where: { orderId: data.orderId },
+        update: { 
+          method: data.method,
+          tableNumber: order.tableNumber || 'Walk-in'
+        },
+        create: {
+          orderId: data.orderId,
+          method: data.method,
+          tableNumber: order.tableNumber || 'Walk-in',
+        }
+      });
 
       io.emit("payment-method-updated", selection);
 
@@ -266,12 +262,17 @@ async function startServer() {
         if (!order || !company) return;
 
         // Notify admins/staff via existing payment request mechanism
-        const selection = {
-          id: crypto.randomUUID(),
-          orderId: data.orderId,
-          method: 'BILL REQUEST',
-          tableNumber: order.tableNumber || 'Walk-in',
-        };
+        const selection = await prisma.paymentSelection.upsert({
+          where: { orderId: data.orderId },
+          update: { 
+            method: 'BILL REQUEST' 
+          },
+          create: {
+            orderId: data.orderId,
+            method: 'BILL REQUEST',
+            tableNumber: order.tableNumber || 'Walk-in',
+          }
+        });
         io.emit("payment-method-updated", selection);
 
         if (printers.length > 0) {
@@ -324,38 +325,45 @@ async function startServer() {
       }
     });
 
-    socket.on("dismiss-payment-selection", (orderId: string) => {
-      const index = activePaymentSelections.findIndex(s => s.orderId === orderId);
-      if (index !== -1) {
-        activePaymentSelections.splice(index, 1);
+    socket.on("dismiss-payment-selection", async (orderId: string) => {
+      try {
+        await prisma.paymentSelection.deleteMany({ where: { orderId } });
         io.emit("payment-method-cleared", orderId);
+      } catch (err) {
+        console.error("Socket Dismiss Payment Error:", err);
       }
     });
 
-    socket.on("dismiss-waiter-call", (id: string) => {
-      const index = activeWaiterCalls.findIndex(c => c.id === id);
-      if (index !== -1) {
-        const handledCall = {
-          ...activeWaiterCalls[index],
-          handledAt: new Date().toISOString(),
-        };
-        activeWaiterCalls.splice(index, 1);
-        handledWaiterCalls.unshift(handledCall);
-        if (handledWaiterCalls.length > 10) handledWaiterCalls.pop(); // Keep last 10 history items
-
+    socket.on("dismiss-waiter-call", async (id: string) => {
+      try {
+        const handledCall = await prisma.waiterCall.update({
+          where: { id },
+          data: {
+            status: 'HANDLED',
+            handledAt: new Date()
+          }
+        });
         io.emit("waiter-call-dismissed", id);
         io.emit("waiter-call-handled", handledCall);
+      } catch (err) {
+        console.error("Socket Dismiss Waiter Call Error:", err);
       }
     });
 
-    socket.on("clear-waiter-history", () => {
-      handledWaiterCalls.length = 0;
-      io.emit("waiter-history-cleared");
-      console.log("[Socket] Waiter history cleared");
+    socket.on("clear-waiter-history", async () => {
+      try {
+        await prisma.waiterCall.deleteMany({ where: { status: 'HANDLED' } });
+        io.emit("waiter-history-cleared");
+        console.log("[Socket] Waiter history cleared");
+      } catch (err) {
+        console.error("Socket Clear Waiter History Error:", err);
+      }
     });
   });
 
-  // Multer config
+  /**
+   * Multer config
+   */
   const storage = multer.diskStorage({
     destination: (req, file, cb) => {
       cb(null, 'uploads/');
@@ -580,12 +588,13 @@ async function startServer() {
   // Company Settings
   app.get("/api/company", async (req, res) => {
     const company = await prisma.company.findFirst();
+    const receiptSettings = await prisma.receiptSetting.findFirst();
     // Merge Dynamic System Settings into the company response for frontend compatibility
     const settings = {
       enableSplitBill: getSetting<boolean>('enable_split_bill', true),
       enableReservations: getSetting<boolean>('enable_reservations', true),
     };
-    res.json({ ...(company || {}), ...settings });
+    res.json({ ...(company || {}), ...settings, receiptSettings: receiptSettings || {} });
   });
 
   app.post("/api/company", authenticate, async (req: AuthenticatedRequest, res: Response) => {
@@ -831,19 +840,18 @@ async function startServer() {
           include: { items: true }
         });
 
-        const selectionIndex = activePaymentSelections.findIndex(s => s.orderId === id);
-        if (selectionIndex !== -1) {
-          activePaymentSelections.splice(selectionIndex, 1);
-          io.emit("payment-method-cleared", id);
-        }
+        await tx.paymentSelection.deleteMany({ where: { orderId: id } });
 
         // Close the table
         if (order.tableId) {
           const table = await tx.table.update({
             where: { id: order.tableId },
-            data: { status: 'AVAILABLE' }
+            data: { 
+              status: 'AVAILABLE',
+              guestCount: 0 
+            }
           });
-          io.emit("table-status-updated", { tableId: order.tableId, status: 'AVAILABLE' });
+          io.emit("table-status-updated", { tableId: order.tableId, status: 'AVAILABLE', guestCount: 0 });
         }
 
         return { payment, order: updatedOrder };
@@ -989,9 +997,12 @@ async function startServer() {
         if (isSettled && order.tableId) {
           const table = await tx.table.update({
             where: { id: order.tableId },
-            data: { status: 'AVAILABLE' }
+            data: { 
+              status: 'AVAILABLE',
+              guestCount: 0 
+            }
           });
-          io.emit("table-status-updated", { tableId: order.tableId, status: 'AVAILABLE' });
+          io.emit("table-status-updated", { tableId: order.tableId, status: 'AVAILABLE', guestCount: 0 });
         }
 
         await tx.auditLog.create({
@@ -1004,11 +1015,8 @@ async function startServer() {
 
         // If the order is paid, clear the payment selection notification
         if (isSettled) {
-          const selectionIndex = activePaymentSelections.findIndex(s => s.orderId === id);
-          if (selectionIndex !== -1) {
-            activePaymentSelections.splice(selectionIndex, 1);
-            io.emit("payment-method-cleared", id);
-          }
+          await tx.paymentSelection.deleteMany({ where: { orderId: id } });
+          io.emit("payment-method-cleared", id);
         }
 
         return { payment, order: updatedOrder, remainingBalance: Math.max(0, order.totalAmount - totalPaid), isSettled };
@@ -1034,9 +1042,12 @@ async function startServer() {
         if (updated.tableId) {
           await tx.table.update({
             where: { id: updated.tableId },
-            data: { status: 'AVAILABLE' }
+            data: { 
+              status: 'AVAILABLE',
+              guestCount: 0 
+            }
           });
-          io.emit("table-status-updated", { tableId: updated.tableId, status: 'AVAILABLE' });
+          io.emit("table-status-updated", { tableId: updated.tableId, status: 'AVAILABLE', guestCount: 0 });
         }
         return updated;
       });
@@ -1052,20 +1063,18 @@ async function startServer() {
   // Manual Table Operations
   app.post("/api/admin/tables/:id/open", authenticate, async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
-    const { guestCount, waiterId } = req.body;
+    const { guestCount } = req.body;
     try {
       const table = await prisma.table.update({
         where: { id },
         data: { 
           status: 'OCCUPIED',
-          // Assuming these fields exist or are handled via extensions
-          // guestCount: parseInt(guestCount) || 1,
-          // assignedWaiterId: waiterId || null
+          guestCount: parseInt(String(guestCount)) || 1,
         }
       });
       
-      io.emit("table-status-updated", { tableId: id, status: 'OCCUPIED' });
-      res.json({ success: true, table });
+      io.emit("table-status-updated", { tableId: id, status: 'OCCUPIED', guestCount: table.guestCount });
+      res.json(table);
     } catch (error) {
       res.status(500).json({ error: "Failed to open table" });
     }
@@ -1093,12 +1102,11 @@ async function startServer() {
     const { targetTableId } = req.body;
     try {
       await prisma.$transaction(async (tx) => {
-        // 1. Find active orders for source table
+        const sourceTable = await tx.table.findUnique({ where: { id } });
         const activeOrders = await tx.order.findMany({
           where: { tableId: id, status: { notIn: ['PAID', 'CANCELLED', 'COMPLETED'] } }
         });
 
-        // 2. Move orders to target table
         for (const order of activeOrders) {
           await tx.order.update({
             where: { id: order.id },
@@ -1106,9 +1114,14 @@ async function startServer() {
           });
         }
 
-        // 3. Swap statuses
-        await tx.table.update({ where: { id }, data: { status: 'AVAILABLE' } });
-        await tx.table.update({ where: { id: targetTableId }, data: { status: 'OCCUPIED' } });
+        await tx.table.update({ 
+          where: { id }, 
+          data: { status: 'AVAILABLE', guestCount: 0 } 
+        });
+        await tx.table.update({ 
+          where: { id: targetTableId }, 
+          data: { status: 'OCCUPIED', guestCount: sourceTable?.guestCount || 1 } 
+        });
       });
 
       io.emit("table-status-updated", { tableId: id, status: 'AVAILABLE' });
@@ -1125,10 +1138,13 @@ async function startServer() {
       // Professional Flow: Occupied -> Cleaning -> Available
       const table = await prisma.table.update({
         where: { id },
-        data: { status: 'CLEANING' }
+        data: { 
+          status: 'CLEANING',
+          guestCount: 0 
+        }
       });
       
-      io.emit("table-status-updated", { tableId: id, status: 'CLEANING' });
+      io.emit("table-status-updated", { tableId: id, status: 'CLEANING', guestCount: 0 });
       
       // Auto-revert to available after 5 minutes (simulated)
       setTimeout(async () => {
@@ -1149,9 +1165,12 @@ async function startServer() {
     try {
       const table = await prisma.table.update({
         where: { id },
-        data: { status: 'AVAILABLE' }
+        data: { 
+          status: 'AVAILABLE',
+          guestCount: 0 
+        }
       });
-      io.emit("table-status-updated", { tableId: id, status: 'AVAILABLE' });
+      io.emit("table-status-updated", { tableId: id, status: 'AVAILABLE', guestCount: 0 });
       res.json({ success: true, table });
     } catch (error) {
       res.status(500).json({ error: "Failed to release table" });
@@ -1572,18 +1591,21 @@ async function startServer() {
   });
 
   // Waiter Requests API
-  app.get("/api/admin/waiter-calls", authenticate, (req, res) => {
-    res.json(activeWaiterCalls);
+  app.get("/api/admin/waiter-calls", authenticate, async (req, res) => {
+    const calls = await prisma.waiterCall.findMany({ where: { status: 'ACTIVE' } });
+    res.json(calls);
   });
 
   // Handled Waiter Requests API
-  app.get("/api/admin/waiter-calls/history", authenticate, (req, res) => {
-    res.json(handledWaiterCalls);
+  app.get("/api/admin/waiter-calls/history", authenticate, async (req, res) => {
+    const history = await prisma.waiterCall.findMany({ where: { status: 'HANDLED' }, take: 20, orderBy: { handledAt: 'desc' } });
+    res.json(history);
   });
 
   // Active Payment Selections API
-  app.get("/api/admin/payment-selections", authenticate, (req, res) => {
-    res.json(activePaymentSelections);
+  app.get("/api/admin/payment-selections", authenticate, async (req, res) => {
+    const selections = await prisma.paymentSelection.findMany();
+    res.json(selections);
   });
 
   // Menu Management
@@ -1843,10 +1865,15 @@ async function startServer() {
         orderBy: { name: 'asc' }
       });
 
+      const [activeCalls, activePayments] = await Promise.all([
+        prisma.waiterCall.findMany({ where: { status: 'ACTIVE' } }),
+        prisma.paymentSelection.findMany()
+      ]);
+
       const tablesWithContext = tables.map(table => ({
         ...table,
-        hasCall: activeWaiterCalls.some(call => call.tableId === table.id),
-        paymentRequested: table.orders.some(o => activePaymentSelections.some(s => s.orderId === o.id))
+        hasCall: activeCalls.some(call => call.tableId === table.id),
+        paymentRequested: table.orders.some(o => activePayments.some(s => s.orderId === o.id))
       }));
       res.json(tablesWithContext);
     } catch (error) {
@@ -1856,7 +1883,7 @@ async function startServer() {
 
   // Customer Ordering
   app.post("/api/orders", async (req, res) => {
-    const { tableId, items } = req.body;
+    const { tableId, items, guestCount } = req.body;
     
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "Order must contain at least one item." });
@@ -1877,9 +1904,12 @@ async function startServer() {
         if (tableId) {
           const table = await tx.table.update({
             where: { id: tableId },
-            data: { status: 'OCCUPIED' }
+            data: { 
+              status: 'OCCUPIED',
+              guestCount: parseInt(String(guestCount)) || 1
+            }
           });
-          io.emit("table-status-updated", { tableId, status: 'OCCUPIED' });
+          io.emit("table-status-updated", { tableId, status: 'OCCUPIED', guestCount: table.guestCount });
         }
 
         const orderItemsData = [];
@@ -2046,20 +2076,20 @@ async function startServer() {
       } catch (e) { }
 
       if (['PAID', 'CANCELLED', 'COMPLETED'].includes(status)) {
-        const idx = activePaymentSelections.findIndex(s => s.orderId === id);
-        if (idx !== -1) {
-          activePaymentSelections.splice(idx, 1);
-          io.emit("payment-method-cleared", id);
-        }
+        await prisma.paymentSelection.deleteMany({ where: { orderId: id } });
+        io.emit("payment-method-cleared", id);
       }
 
       // Release table if order is closed
       if (['PAID', 'CANCELLED', 'COMPLETED'].includes(status) && order.tableId) {
         const table = await prisma.table.update({
           where: { id: order.tableId },
-          data: { status: 'AVAILABLE' }
+          data: { 
+            status: 'AVAILABLE',
+            guestCount: 0 
+          }
         });
-        io.emit("table-status-updated", { tableId: order.tableId, status: 'AVAILABLE' });
+        io.emit("table-status-updated", { tableId: order.tableId, status: 'AVAILABLE', guestCount: 0 });
       }
 
       // Real-time update for the tracking customer

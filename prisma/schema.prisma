@@ -314,3 +314,28 @@ model OrderItem {
   product     Product           @relation(fields: [productId], references: [id])
   order       Order             @relation(fields: [orderId], references: [id])
 }
+
+// DB-backed real-time waiter calls (replaces in-memory activeWaiterCalls)
+model WaiterCall {
+  id          String   @id @default(uuid())
+  tableId     String
+  tableName   String
+  reason      String
+  status      String   @default("ACTIVE") // ACTIVE, DISMISSED, HANDLED, EXPIRED
+  createdAt   DateTime @default(now())
+  handledAt   DateTime?
+  expiresAt   DateTime
+}
+
+// DB-backed payment selections (replaces in-memory activePaymentSelections)
+model PaymentSelection {
+  id          String   @id @default(uuid())
+  orderId     String   @unique
+  method      String
+  tableNumber String
+  status      String   @default("ACTIVE") // ACTIVE, CLEARED, SETTLED, EXPIRED
+  createdAt   DateTime @default(now())
+  clearedAt   DateTime?
+  expiresAt   DateTime
+}
+

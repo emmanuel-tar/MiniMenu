@@ -26,6 +26,7 @@ import {
   DialogDescription 
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '@/src/hooks/useAuth';
 import { cn, formatPrice } from '@/src/lib/utils';
@@ -74,8 +75,15 @@ export default function TableStatus() {
   const [staff, setStaff] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTableBreakdown, setSelectedTableBreakdown] = useState<any>(null);
+  const [guestCount, setGuestCount] = useState(1);
 
   const socket = useMemo(() => io(), []);
+
+  useEffect(() => {
+    if (selectedTableBreakdown) {
+      setGuestCount(1);
+    }
+  }, [selectedTableBreakdown]);
 
   const fetchData = async () => {
     try {
@@ -308,11 +316,23 @@ export default function TableStatus() {
           
           <div className="p-6 space-y-6 max-h-[65vh] overflow-y-auto no-scrollbar">
             {/* Quick Actions */}
+            {!selectedTableBreakdown?.orders?.length && (
+              <div className="space-y-2">
+                <Label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Initial Guest Count</Label>
+                <Input 
+                  type="number" 
+                  min="1" 
+                  value={guestCount} 
+                  onChange={(e) => setGuestCount(parseInt(e.target.value) || 1)}
+                  className="rounded-xl h-11 border-slate-100 bg-slate-50"
+                />
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               {!selectedTableBreakdown?.orders?.length ? (
                 <Button 
                   className="bg-emerald-600 hover:bg-emerald-700 h-12 rounded-xl font-bold gap-2"
-                  onClick={() => executeAction('open')}
+                  onClick={() => executeAction('open', { guestCount })}
                 >
                   <CheckCircle size={18} /> Open Table
                 </Button>

@@ -446,6 +446,12 @@ export default function TrackOrder() {
         <DialogContent className="rounded-3xl border-none max-w-md p-0 overflow-hidden">
           <div className="bg-emerald-600 p-8 text-center text-white">
             <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              {company?.receiptSettings?.showLogo && company?.logo ? (
+                <img src={company.logo} alt="Logo" className="max-w-full max-h-full object-contain" />
+              ) : (
+                <CheckCircle size={40} />
+              )}
+            </div>
               <CheckCircle size={40} />
             </div>
             <h2 className="text-2xl font-bold">Payment Successful</h2>
@@ -455,6 +461,12 @@ export default function TrackOrder() {
           <div className="p-6 bg-white">
             <div className="border-2 border-dashed border-slate-100 rounded-2xl p-4 mb-6">
               <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">
+                {company?.receiptSettings?.showLogo && company?.logo ? (
+                  <img src={company.logo} alt="Logo" className="max-w-[80px] mb-2" />
+                ) : (
+                  // Optionally display company name if no logo
+                  <span className="text-lg font-bold text-slate-900">{company?.name}</span>
+                )}
                 <span>Invoice #{order.id.slice(0, 8)}</span>
                 <span>{new Date().toLocaleDateString()}</span>
               </div>
@@ -473,7 +485,7 @@ export default function TrackOrder() {
                   <span>Subtotal</span>
                   <span>{company?.currency}{subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                 </div>
-                {taxAmount > 0 && (
+                {company?.receiptSettings?.showTax && taxAmount > 0 && (
                   <div className="flex justify-between text-xs text-slate-500">
                     <span>VAT ({taxRate}%)</span>
                     <span>{company?.currency}{taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
@@ -490,6 +502,12 @@ export default function TrackOrder() {
                   <span>{company?.currency}{grandTotal.toLocaleString()}</span>
                 </div>
               </div>
+            </div>
+
+            <div className="text-center text-xs text-slate-500 mt-4">
+              {company?.receiptSettings?.footerText || 'Thank you for your visit!'}
+              {company?.address && <p className="mt-1">{company.address}</p>}
+              {company?.phone && <p>{company.phone}</p>}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
