@@ -45,6 +45,7 @@ interface OrderItem {
   status: string;
   prepTimeMinutes?: number;
   countdownStartedAt?: string;
+  modifiers?: { name: string; price: number }[];
   estimatedCompletionTime?: string;
 }
 
@@ -247,6 +248,11 @@ export default function TrackOrder() {
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="font-bold text-slate-900">{item.productName}</p>
+                      {item.modifiers && item.modifiers.length > 0 && (
+                        <span className="block text-[10px] text-slate-500 italic">
+                          ({item.modifiers.map((mod: any) => mod.name).join(', ')})
+                        </span>
+                      )}
                       <p className="text-sm text-slate-500">Qty: {item.quantity}</p>
                     </div>
                     <div className="min-w-[160px]">
@@ -262,4 +268,3 @@ export default function TrackOrder() {
     </div>
   );
 }
-

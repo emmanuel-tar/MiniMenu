@@ -7,6 +7,7 @@ interface PrintableKotItem {
   quantity: number;
   productName: string;
   notes?: string;
+  modifiers?: { name: string; price: number }[];
 }
 
 interface PrintableKot {
@@ -29,6 +30,7 @@ interface PrintableInvoiceItem {
   quantity: number;
   productName: string;
   price: number;
+  modifiers?: { name: string; price: number }[];
 }
 
 interface PrintableInvoice {
@@ -116,9 +118,14 @@ const KOTPrinter: React.FC = () => {
     }
 
     const itemsHtml = kot.items.map(item => `
-      <div style="display: flex; justify-content: space-between; font-size: 14px;">
+      <div style="margin-bottom: 5px;">
+        <div style="display: flex; justify-content: space-between; font-size: 14px;">
         <span>${item.quantity}x ${item.productName}</span>
       </div>
+      ${item.modifiers && item.modifiers.length > 0 ? `
+        <div style="font-size: 12px; margin-left: 20px; color: #555;">
+          ${item.modifiers.map(mod => `+ ${mod.name}`).join('<br/>')}
+        </div>` : ''}
     `).join('');
 
     printWindow.document.write(`

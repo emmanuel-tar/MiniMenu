@@ -68,6 +68,10 @@ const InvoicePrinter: React.FC = () => {
         <span>${i.quantity}x ${i.productName}</span>
         <span>${currency}${(i.price * i.quantity).toLocaleString()}</span>
       </div>
+      ${i.modifiers && i.modifiers.length > 0 ? `
+        <div style="font-size: 12px; margin-left: 20px; color: #555;">
+          ${i.modifiers.map(mod => `+ ${mod.name} (${currency}${mod.price.toLocaleString()})`).join('<br/>')}
+        </div>` : ''}
     `).join('');
 
     printWindow.document.write(`

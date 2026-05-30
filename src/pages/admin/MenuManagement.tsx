@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { 
+import {
   DragDropContext, Droppable, Draggable, DropResult
-} from 'react-beautiful-dnd';
+} from '@hello-pangea/dnd';
 import { // These are your UI components
   Card,
   CardContent, 
@@ -15,6 +15,7 @@ import { Label } from '@/components/ui/label';
 import { 
   Dialog, 
   DialogContent, 
+  DialogDescription,
   DialogHeader, 
   DialogTitle, 
   DialogTrigger 
@@ -35,13 +36,13 @@ import {
   TableRow 
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Utensils, Tag, Layers, Search, Edit2, Download, Upload, Trash2, FileDown, FileUp, Image as ImageIcon, Eye, EyeOff, Copy, CheckCircle, XCircle } from 'lucide-react';
+import { Plus, Utensils, Tag, Layers, Search, Edit2, Download, Upload, Trash2, FileDown, FileUp, Image as ImageIcon, Eye, EyeOff, Copy, CheckCircle, XCircle, ListTree, Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/src/hooks/useAuth';
 import { GripVertical } from 'lucide-react';
 export default function MenuManagement() {
   const { token } = useAuth();
-  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [categories, setCategories] = useState<any[]>([]);
   const [productGroups, setProductGroups] = useState<{ id: string; name: string }[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [stations, setStations] = useState<{ id: string; name: string }[]>([]);
@@ -73,6 +74,10 @@ export default function MenuManagement() {
   const [editingCategory, setEditingCategory] = useState<any>(null);
   const [isCategoryEditDialogOpen, setIsCategoryEditDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isModifierDialogOpen, setIsModifierDialogOpen] = useState(false);
+  const [selectedProductForModifiers, setSelectedProductForModifiers] = useState<any>(null);
+  const [productModifiers, setProductModifiers] = useState<any[]>([]);
+  const [newModifierGroup, setNewModifierGroup] = useState({ name: '', minSelection: '0', maxSelection: '1' });
 
   useEffect(() => {
     const fetchData = async () => {
@@ -96,6 +101,65 @@ export default function MenuManagement() {
     };
     if (token) fetchData();
   }, [token]);
+
+  const fetchProductModifiers = async (productId: string) => {
+    const res = await fetch(`/api/menu/products/${productId}/modifiers`);
+    if (res.ok) setProductModifiers(await res.json());
+  };
+
+  const handleAddModifierGroup = async () => {
+    if (!newModifierGroup.name || !selectedProductForModifiers) return;
+    const res = await fetch('/api/menu/modifier-groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ ...newModifierGroup, productId: selectedProductForModifiers.id }),
+    });
+    if (res.ok) {
+      toast.success('Group created');
+      setNewModifierGroup({ name: '', minSelection: '0', maxSelection: '1' });
+      fetchProductModifiers(selectedProductForModifiers.id);
+    }
+  };
+
+  const handleAddModifierOption = async (groupId: string, name: string, price: string) => {
+    const res = await fetch(`/api/menu/modifier-groups/${groupId}/options`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ name, price: parseFloat(price) || 0 }),
+    });
+    if (res.ok) {
+      toast.success('Option added');
+      fetchProductModifiers(selectedProductForModifiers.id);
+    }
+  };
+
+  const handleDeleteModifierGroup = async (id: string) => {
+    const res = await fetch(`/api/menu/modifier-groups/${id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (res.ok) {
+      toast.success('Group deleted');
+      fetchProductModifiers(selectedProductForModifiers.id);
+    }
+  };
+
+  const handleDeleteModifierOption = async (id: string) => {
+    const res = await fetch(`/api/menu/modifier-groups/options/${id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (res.ok) {
+      toast.success('Option deleted');
+      fetchProductModifiers(selectedProductForModifiers.id);
+    }
+  };
+
+  const openModifierDialog = (product: any) => {
+    setSelectedProductForModifiers(product);
+    fetchProductModifiers(product.id);
+    setIsModifierDialogOpen(true);
+  };
 
   const handleAddCategory = async () => {
     if (!newCategory.name) return;
@@ -286,21 +350,6 @@ export default function MenuManagement() {
       if (uploaded) imageUrl = uploaded;
     }
 
-    try {
-      const res = await fetch(`/api/menu/categories/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ active }),
-      });
-      if (res.ok) {
-        setCategories(categories.map(c => c.id === id ? { ...c, active } : c));
-        toast.success(`Category ${active ? 'activated' : 'deactivated'}`);
-      } else {
-        toast.error('Failed to update category status');
-      }
-    } catch (err) {
-      toast.error('Connection error');
-    }
     const res = await fetch(`/api/menu/categories/${editingCategory.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -584,7 +633,7 @@ export default function MenuManagement() {
                 </div>
                 <div className="col-span-2 space-y-2">
                   <Label>Category Image</Label>
-                  <Input type="file" accept="image/*" onChange={e => setCategoryImage(e.target.files?.[0] || null)} className="cursor-pointer" />
+                  <Input type="file" accept="image/*" onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCategoryImage(e.target.files?.[0] || null)} className="cursor-pointer" />
                 </div>
                 <Button onClick={handleAddCategory} className="w-full bg-slate-900">Create</Button>
               </div>
@@ -593,7 +642,7 @@ export default function MenuManagement() {
 
           <Dialog>
             <DialogTrigger asChild>
-              <Button variant="outline" className="rounded-xl border-slate-200">
+              <Button variant="outline" className="rounded-xl border-slate-200" onClick={() => setNewGroup({name: ''})}>
                 <Layers className="mr-2" size={18} /> New Group
               </Button>
             </DialogTrigger>
@@ -696,7 +745,7 @@ export default function MenuManagement() {
                 </div>
                 <div className="col-span-2 space-y-2">
                   <Label>Product Image</Label>
-                  <Input type="file" accept="image/*" onChange={e => setNewImage(e.target.files?.[0] || null)} className="cursor-pointer" />
+                  <Input type="file" accept="image/*" onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewImage(e.target.files?.[0] || null)} className="cursor-pointer" />
                 </div>
                 <Button onClick={handleAddProduct} disabled={uploading} className="col-span-2 bg-slate-900 mt-4 py-6">
                   {uploading ? 'Uploading...' : 'Save Product'}
@@ -714,51 +763,66 @@ export default function MenuManagement() {
           <CardDescription>Organize your menu items into customer-facing categories.</CardDescription>
         </CardHeader>
         <CardContent className="pt-6">
-          <Table>
-            <TableHeader>
-              <TableRow className="border-slate-100 hover:bg-transparent">
-                <TableHead className="w-15">Image</TableHead>
-                <TableHead>Category Name</TableHead>
-                <TableHead>Items Count</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created Date</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {categories.map((category: any) => (
-                <TableRow key={category.id} className="border-slate-50 hover:bg-slate-50/50">
-                  <TableCell>
-                    {category.image ? (
-                      <img src={category.image} alt={category.name} className="w-10 h-10 object-cover rounded-lg shadow-sm" />
-                    ) : (
-                      <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center text-slate-300">
-                        <ImageIcon size={14} />
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell className="font-semibold text-slate-800">{category.name}</TableCell>
-                  <TableCell className="text-slate-500 text-sm">{category.products?.length || 0}</TableCell>
-                  <TableCell>
-                    <Badge className={category.active ? "bg-emerald-50 text-emerald-600 border-none px-2 py-0" : "bg-red-50 text-red-600 border-none px-2 py-0"}>
-                      {category.active ? "Active" : "Inactive"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-slate-500 text-sm">
-                    {new Date(category.createdAt).toLocaleDateString()}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button variant="ghost" size="icon" className="text-slate-400" onClick={() => toggleCategoryActive(category.id, !category.active)}>
-                      {category.active ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </Button>
-                    <Button variant="ghost" size="icon" className="text-slate-400" onClick={() => { setEditingCategory(category); setIsCategoryEditDialogOpen(true); }}>
-                      <Edit2 size={16} />
-                    </Button>
-                  </TableCell>
+          <DragDropContext onDragEnd={onDragEnd}>
+            <Table>
+              <TableHeader>
+                <TableRow className="border-slate-100 hover:bg-transparent">
+                  <TableHead className="w-10"></TableHead>
+                  <TableHead className="w-15">Image</TableHead>
+                  <TableHead>Category Name</TableHead>
+                  <TableHead>Items</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <Droppable droppableId="categories">
+                {(provided) => (
+                  <TableBody {...provided.droppableProps} ref={provided.innerRef}>
+                    {categories.map((category: any, index: number) => (
+                      <Draggable key={category.id} draggableId={category.id} index={index}>
+                        {(provided) => (
+                          <TableRow 
+                            ref={provided.innerRef} 
+                            {...provided.draggableProps} 
+                            className="border-slate-50 hover:bg-slate-50/50"
+                          >
+                            <TableCell {...provided.dragHandleProps}>
+                              <GripVertical size={16} className="text-slate-300" />
+                            </TableCell>
+                            <TableCell>
+                              {category.image ? (
+                                <img src={category.image} alt={category.name} className="w-10 h-10 object-cover rounded-lg shadow-sm" />
+                              ) : (
+                                <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center text-slate-300">
+                                  <ImageIcon size={14} />
+                                </div>
+                              )}
+                            </TableCell>
+                            <TableCell className="font-semibold text-slate-800">{category.name}</TableCell>
+                            <TableCell className="text-slate-500 text-sm">{category.products?.length || 0}</TableCell>
+                            <TableCell>
+                              <Badge className={category.active ? "bg-emerald-50 text-emerald-600 border-none px-2 py-0" : "bg-red-50 text-red-600 border-none px-2 py-0"}>
+                                {category.active ? "Active" : "Inactive"}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button variant="ghost" size="icon" className="text-slate-400" onClick={() => toggleCategoryActive(category.id, !category.active)}>
+                                {category.active ? <EyeOff size={16} /> : <Eye size={16} />}
+                              </Button>
+                              <Button variant="ghost" size="icon" className="text-slate-400" onClick={() => { setEditingCategory(category); setIsCategoryEditDialogOpen(true); }}>
+                                <Edit2 size={16} />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </Draggable>
+                    ))}
+                    {provided.placeholder}
+                  </TableBody>
+                )}
+              </Droppable>
+            </Table>
+          </DragDropContext>
         </CardContent>
       </Card>
 
@@ -864,6 +928,9 @@ export default function MenuManagement() {
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
+                    <Button variant="ghost" size="icon" className="text-slate-400 hover:text-indigo-500" onClick={() => openModifierDialog(product)}>
+                      <ListTree size={16} />
+                    </Button>
                     <Button variant="ghost" size="icon" className="text-slate-400 hover:text-blue-500" onClick={() => handleCloneProduct(product.id)}>
                       <Copy size={16} />
                     </Button>
@@ -994,10 +1061,99 @@ export default function MenuManagement() {
             )}
             <div className="col-span-2 space-y-2">
               <Label>Update Image</Label>
-              <Input type="file" accept="image/*" onChange={e => setEditImage(e.target.files?.[0] || null)} className="cursor-pointer" />
+              <Input type="file" accept="image/*" onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditImage(e.target.files?.[0] || null)} className="cursor-pointer" />
             </div>
             <Button onClick={handleEditProduct} disabled={uploading} className="col-span-2 bg-slate-900 mt-4 py-6">
               {uploading ? 'Uploading...' : 'Update Product'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modifiers Dialog */}
+      <Dialog open={isModifierDialogOpen} onOpenChange={setIsModifierDialogOpen}>
+        <DialogContent className="rounded-3xl border-none max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Settings2 size={20} className="text-slate-400" />
+              Modifiers: {selectedProductForModifiers?.name}
+            </DialogTitle>
+            <DialogDescription>Add choices like "Extra Cheese" or "Spiciness Level".</DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-6 py-4">
+            {/* Add Group */}
+            <div className="grid grid-cols-4 gap-3 items-end p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <div className="col-span-2 space-y-2">
+                <Label className="text-[10px] uppercase font-bold text-slate-400">Group Name</Label>
+                <Input placeholder="e.g. Add-ons" value={newModifierGroup.name} onChange={e => setNewModifierGroup({...newModifierGroup, name: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-[10px] uppercase font-bold text-slate-400">Max Pick</Label>
+                <Input type="number" value={newModifierGroup.maxSelection} onChange={e => setNewModifierGroup({...newModifierGroup, maxSelection: e.target.value})} />
+              </div>
+              <Button onClick={handleAddModifierGroup} className="bg-slate-900 rounded-xl">Add Group</Button>
+            </div>
+
+            {/* Existing Groups */}
+            <div className="space-y-4">
+              {productModifiers.map((group) => (
+                <div key={group.id} className="border border-slate-100 rounded-2xl overflow-hidden">
+                  <div className="bg-slate-50 p-4 flex justify-between items-center border-b border-slate-100">
+                    <div>
+                      <h4 className="font-bold text-slate-900">{group.name}</h4>
+                      <p className="text-[10px] text-slate-400 uppercase">Max Selection: {group.maxSelection || 'Unlimited'}</p>
+                    </div>
+                    <Button variant="ghost" size="icon" className="text-red-400 hover:text-red-600" onClick={() => handleDeleteModifierGroup(group.id)}>
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                  
+                  <div className="p-4 space-y-3">
+                    {/* Options List */}
+                    <div className="grid grid-cols-1 gap-2">
+                      {group.options.map((opt: any) => (
+                        <div key={opt.id} className="flex items-center justify-between p-2 bg-white rounded-lg border border-slate-50 shadow-sm text-sm">
+                          <span className="font-medium">{opt.name}</span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-slate-400">${opt.price.toFixed(2)}</span>
+                            <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-300 hover:text-red-500" onClick={() => handleDeleteModifierOption(opt.id)}>
+                              <XCircle size={14} />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Add Option Inline */}
+                    <form className="flex gap-2" onSubmit={(e) => {
+                      e.preventDefault();
+                      const form = e.target as any;
+                      handleAddModifierOption(group.id, form.optName.value, form.optPrice.value);
+                      form.reset();
+                    }}>
+                      <Input name="optName" placeholder="Option name" className="h-9 text-xs" required />
+                      <Input name="optPrice" type="number" step="0.01" placeholder="Price" className="h-9 text-xs w-24" />
+                      <Button type="submit" size="sm" variant="outline" className="h-9 rounded-lg">
+                        <Plus size={14} />
+                      </Button>
+                    </form>
+                  </div>
+                </div>
+              ))}
+              
+              {productModifiers.length === 0 && (
+                <div className="text-center py-8 opacity-40">
+                  <ListTree className="mx-auto mb-2" size={32} />
+                  <p className="text-sm font-medium">No modifiers defined for this product</p>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          <div className="flex justify-end gap-3 mt-4 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => setIsModifierDialogOpen(false)} className="rounded-xl">
+              Done
             </Button>
           </div>
         </DialogContent>
@@ -1032,7 +1188,7 @@ export default function MenuManagement() {
             )}
             <div className="space-y-2">
               <Label>Category Image</Label>
-              <Input type="file" accept="image/*" onChange={e => setCategoryImage(e.target.files?.[0] || null)} className="cursor-pointer" />
+              <Input type="file" accept="image/*" onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCategoryImage(e.target.files?.[0] || null)} className="cursor-pointer" />
             </div>
             <Button onClick={handleEditCategory} className="w-full bg-slate-900">Update Category</Button>
           </div>

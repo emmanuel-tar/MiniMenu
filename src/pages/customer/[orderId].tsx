@@ -63,6 +63,8 @@ interface OrderItem {
   status: string;
   prepTimeMinutes?: number;
   price: number;
+  modifiers?: { name: string; price: number }[];
+  notes?: string;
   countdownStartedAt?: string;
   estimatedCompletionTime?: string;
 }
@@ -337,6 +339,18 @@ export default function TrackOrder() {
                 <div key={item.id} className="flex items-center justify-between p-3 rounded-lg border border-slate-100">
                   <div className="flex flex-col">
                     <span className="font-bold text-slate-800">{item.quantity}x {item.productName}</span>
+                    {item.modifiers && item.modifiers.length > 0 && (
+                      <span className="block text-[10px] text-slate-500 italic">
+                        ({item.modifiers.map((mod: any) => 
+                          `${mod.name}${mod.price > 0 ? ` (+${company?.currency || ''}${mod.price.toLocaleString()})` : ''}`
+                        ).join(', ')})
+                      </span>
+                    )}
+                    {item.notes && (
+                      <span className="block text-[10px] text-amber-600 font-medium">
+                        Request: "{item.notes}"
+                      </span>
+                    )}
                     <ItemCountdownDisplay item={item} />
                   </div>
                 </div>
@@ -452,8 +466,6 @@ export default function TrackOrder() {
                 <CheckCircle size={40} />
               )}
             </div>
-              <CheckCircle size={40} />
-            </div>
             <h2 className="text-2xl font-bold">Payment Successful</h2>
             <p className="opacity-80">Thank you for your patronage!</p>
           </div>
@@ -473,9 +485,18 @@ export default function TrackOrder() {
               
               <div className="space-y-3">
                 {order.items.map((item) => (
-                  <div key={item.id} className="flex justify-between text-sm">
-                    <span className="text-slate-600">{item.quantity}x {item.productName}</span>
-                    <span className="font-bold text-slate-900">{company?.currency}{item.price.toLocaleString()}</span>
+                  <div key={item.id} className="space-y-1">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-600">{item.quantity}x {item.productName}</span>
+                      <span className="font-bold text-slate-900">{company?.currency}{item.price.toLocaleString()}</span>
+                    </div>
+                    {item.modifiers && item.modifiers.length > 0 && (
+                      <div className="text-[10px] text-slate-500 italic pl-4">
+                        {item.modifiers.map((mod: any) => 
+                          `${mod.name}${mod.price > 0 ? ` (+${company?.currency || ''}${mod.price.toLocaleString()})` : ''}`
+                        ).join(', ')}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

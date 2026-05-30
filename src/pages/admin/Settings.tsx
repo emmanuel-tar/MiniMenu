@@ -41,8 +41,11 @@ import {
 } from '@/components/ui/dialog';
 import { cn } from '@/src/lib/utils';
 
+import { useAuthFetch } from '@/src/lib/auth-fetch'; // Import the new hook
+
 export default function Settings() {
   const { token, user } = useAuth();
+  const authFetch = useAuthFetch();
   const [loading, setLoading] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
   const [isStaffDialogOpen, setIsStaffDialogOpen] = useState(false);
@@ -53,11 +56,13 @@ export default function Settings() {
   const [isStationEditDialogOpen, setIsStationEditDialogOpen] = useState(false);
   const [newStation, setNewStation] = useState({ name: '', description: '' });
   const [printers, setPrinters] = useState<any[]>([]);
+  const [systemPrinters, setSystemPrinters] = useState<any[]>([]);
   const [newPrinter, setNewPrinter] = useState({
     name: '',
     type: 'BROWSER',
     ipAddress: '',
     port: '9100',
+    usbIdentifier: '',
     role: 'CASHIER',
     stationId: ''
   });
@@ -104,9 +109,7 @@ export default function Settings() {
         const statData = await statRes.json();
         setStations(statData);
 
-        const printRes = await fetch('/api/settings/printers', { 
-          headers: { 'Authorization': `Bearer ${token}` } 
-        });
+        const printRes = await authFetch('/api/settings/printers');
         if (printRes.ok) setPrinters(await printRes.json());
 
         const receiptRes = await fetch('/api/settings/receipt');
@@ -115,36 +118,32 @@ export default function Settings() {
           if (rData.id) setReceiptSettings(rData);
         }
 
-        const usersRes = await fetch('/api/admin/users', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const usersRes = await authFetch('/api/admin/users');
         if (usersRes.ok) setUsers(await usersRes.json());
 
-        const logRes = await fetch('/api/admin/audit-logs', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const logRes = await authFetch('/api/admin/audit-logs');
         if (logRes.ok) setAuditLogs(await logRes.json());
 
-        const printLogRes = await fetch('/api/admin/print-logs', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const printLogRes = await authFetch('/api/admin/print-logs');
         if (printLogRes.ok) setPrintLogs(await printLogRes.json());
+
+        const sysPrintersRes = await authFetch('/api/settings/system-printers');
+        if (sysPrintersRes.ok) setSystemPrinters(await sysPrintersRes.json());
       } catch (err) {
         console.error(err);
       }
     };
-    fetchData();
-  }, [token]);
+    if (token) fetchData();
+  }, [token, authFetch]);
 
   const saveCompany = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await fetch('/api/company', {
+      const res = await authFetch('/api/company', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(company),
       });
@@ -169,11 +168,10 @@ export default function Settings() {
       return;
     }
     try {
-      const res = await fetch('/api/stations', {
+      const res = await authFetch('/api/stations', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(newStation),
       });
@@ -194,11 +192,10 @@ export default function Settings() {
   const updateStation = async () => {
     if (!editingStation.name) return;
     try {
-      const res = await fetch(`/api/stations/${editingStation.id}`, {
+      const res = await authFetch(`/api/stations/${editingStation.id}`, {
         method: 'PUT',
         headers: { 
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(editingStation),
       });
@@ -223,11 +220,10 @@ export default function Settings() {
       return;
     }
     try {
-      const res = await fetch('/api/admin/users', {
+      const res = await authFetch('/api/admin/users', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(newStaff),
       });
@@ -235,9 +231,7 @@ export default function Settings() {
         toast.success('Staff account created');
         setIsStaffDialogOpen(false);
         setNewStaff({ name: '', email: '', password: '', role: 'WAITER', stationId: '' });
-        const usersRes = await fetch('/api/admin/users', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const usersRes = await authFetch('/api/admin/users');
         if (usersRes.ok) setUsers(await usersRes.json());
       } else {
         toast.error('Failed to create staff account');
@@ -247,9 +241,8 @@ export default function Settings() {
 
   const deleteStaffMember = async (id: string) => {
     try {
-      const res = await fetch(`/api/admin/users/${id}`, {
+      const res = await authFetch(`/api/admin/users/${id}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
         setUsers(users.filter(u => u.id !== id));
@@ -260,9 +253,8 @@ export default function Settings() {
 
   const deleteStation = async (id: string) => {
     try {
-      const res = await fetch(`/api/stations/${id}`, {
+      const res = await authFetch(`/api/stations/${id}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
         setStations(stations.filter(s => s.id !== id));
@@ -273,9 +265,8 @@ export default function Settings() {
 
   const handleTestPrint = async (stationId: string) => {
     try {
-      const res = await fetch(`/api/stations/${stationId}/test-print`, {
+      const res = await authFetch(`/api/stations/${stationId}/test-print`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
       if (res.ok) {
@@ -291,22 +282,22 @@ export default function Settings() {
   const savePrinter = async () => {
     if (!newPrinter.name) return;
     try {
-      const res = await fetch('/api/settings/printers', {
+      const res = await authFetch('/api/settings/printers', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           ...newPrinter,
           port: parseInt(newPrinter.port) || 9100,
+          usbIdentifier: newPrinter.type === 'USB' ? newPrinter.usbIdentifier : null,
           stationId: newPrinter.stationId || null
         }),
       });
       if (res.ok) {
         const data = await res.json();
         setPrinters([...printers, data]);
-        setNewPrinter({ name: '', type: 'BROWSER', ipAddress: '', port: '9100', role: 'CASHIER', stationId: '' });
+        setNewPrinter({ name: '', type: 'BROWSER', ipAddress: '', port: '9100', usbIdentifier: '', role: 'CASHIER', stationId: '' });
         toast.success('Printer configured');
       }
     } catch (err) {
@@ -316,9 +307,8 @@ export default function Settings() {
 
   const deletePrinter = async (id: string) => {
     try {
-      const res = await fetch(`/api/settings/printers/${id}`, {
+      const res = await authFetch(`/api/settings/printers/${id}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
         setPrinters(printers.filter(p => p.id !== id));
@@ -329,11 +319,10 @@ export default function Settings() {
 
   const saveReceiptSettings = async () => {
     try {
-      const res = await fetch('/api/settings/receipt', {
+      const res = await authFetch('/api/settings/receipt', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(receiptSettings),
       });
@@ -376,7 +365,7 @@ export default function Settings() {
               <form onSubmit={saveCompany} className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <Label>Restaurant Name</Label>
-                  <Input value={company.name} onChange={e => setCompany({...company, name: e.target.value})} placeholder="The Silver Grill" className="rounded-xl border-slate-200" />
+                  <Input value={company.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCompany({...company, name: e.target.value})} placeholder="The Silver Grill" className="rounded-xl border-slate-200" />
                 </div>
                 <div className="space-y-2">
                   <Label>Currency Symbol</Label>
@@ -560,6 +549,8 @@ export default function Settings() {
                     <SelectContent>
                       <SelectItem value="BROWSER">Browser Printing</SelectItem>
                       <SelectItem value="NETWORK">Network (Ethernet)</SelectItem>
+                      <SelectItem value="USB">USB Connection</SelectItem>
+                      <SelectItem value="AGENT">Local Agent (Windows)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -573,6 +564,21 @@ export default function Settings() {
                       <Label className="text-[10px]">Port</Label>
                       <Input value={newPrinter.port} onChange={e => setNewPrinter({...newPrinter, port: e.target.value})} placeholder="9100" className="rounded-xl" />
                     </div>
+                  </div>
+                )}
+                {newPrinter.type === 'USB' && (
+                  <div className="space-y-1">
+                    <Label className="text-[10px] uppercase font-bold text-slate-400">Select Local Printer</Label>
+                    <Select value={newPrinter.usbIdentifier} onValueChange={v => setNewPrinter({...newPrinter, usbIdentifier: v})}>
+                      <SelectTrigger className="rounded-xl">
+                        <SelectValue placeholder="Choose installed printer..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {systemPrinters.map(p => (
+                          <SelectItem key={p.name} value={p.name}>{p.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
                 <div className="space-y-1">

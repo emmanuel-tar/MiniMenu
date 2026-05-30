@@ -47,7 +47,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 export default function CustomerMenu() {
   const { tableId } = useParams();
   const navigate = useNavigate();
-  const [categories, setCategories] = useState([]);
+  const [categories, setCategories] = useState<any[]>([]);
   const [cart, setCart] = useState<any[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [company, setCompany] = useState<any>({ name: 'QRMenu' });
@@ -61,6 +61,7 @@ export default function CustomerMenu() {
   const [selectedWaiterReason, setSelectedWaiterReason] = useState('Assistance'); // Default reason
   const [customWaiterReason, setCustomWaiterReason] = useState('');
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
+  const [selectedModifiers, setSelectedModifiers] = useState<Record<string, any>>({});
   const [guestCount, setGuestCount] = useState(1);
   const [isGuestDialogOpen, setIsGuestDialogOpen] = useState(false);
 
@@ -100,17 +101,27 @@ export default function CustomerMenu() {
     setIsCallWaiterDialogOpen(false);
   };
 
-  const handleAddToCart = (product: any, qty: number, note?: string) => {
-    const existing = cart.find((item: any) => item.id === product.id && item.note === note);
+  const handleAddToCart = (product: any, qty: number, note: string) => {
+    const modifierList = Object.values(selectedModifiers).flat();
+
+    const existing = cart.find((item: any) => 
+      item.id === product.id && 
+      item.note === note && 
+      JSON.stringify(item.modifiers) === JSON.stringify(modifierList)
+    );
+
     if (existing) {
-      setCart(cart.map((item: any) => (item.id === product.id && item.note === note) ? { ...item, quantity: item.quantity + qty } : item));
+      setCart(cart.map((item: any) => (item.id === product.id && item.note === note && JSON.stringify(item.modifiers) === JSON.stringify(modifierList)) ? { ...item, quantity: item.quantity + qty } : item));
     } else {
-      setCart([...cart, { ...product, quantity: qty, note }]);
+      const priceWithModifiers = product.price + modifierList.reduce((sum: number, m: any) => sum + (m.price || 0), 0);
+      setCart([...cart, { ...product, quantity: qty, price: priceWithModifiers, note, modifiers: modifierList }]);
     }
+
     toast.success(`${product.name} added to cart`);
     setSelectedProduct(null);
     setProductQty(1);
     setProductNote('');
+    setSelectedModifiers({});
   };
 
   const removeFromCart = (productId: string) => {
@@ -122,7 +133,9 @@ export default function CustomerMenu() {
     }
   };
 
-  const cartTotal = cart.reduce((acc: number, item: any) => acc + (item.price * item.quantity), 0);
+  const cartTotal = useMemo(() => 
+    formatPrice(cart.reduce((acc: number, item: any) => acc + (item.price * item.quantity), 0), company?.currency),
+  [cart, company]);
 
   const handleFinalOrder = async () => {
     try {
@@ -132,7 +145,12 @@ export default function CustomerMenu() {
         body: JSON.stringify({
           tableId: tableId || null,
           guestCount: tableId ? guestCount : 1,
-          items: cart.map(item => ({ productId: item.id, quantity: item.quantity, note: item.note }))
+          items: cart.map(item => ({ 
+            productId: item.id, 
+            quantity: item.quantity, 
+            selectedModifiers: item.modifiers,
+            notes: item.note
+          }))
         }),
       });
       if (res.ok) {
@@ -281,6 +299,51 @@ export default function CustomerMenu() {
                 </div>
                 <p className="text-slate-500 mb-8 leading-relaxed">{selectedProduct.description}</p>
                 
+                {/* Modifiers Section */}
+                {selectedProduct.modifierGroups?.map((group: any) => (
+                  <div key={group.id} className="mb-6 space-y-3">
+                    <div className="flex justify-between items-center">
+                      <Label className="text-sm font-black uppercase tracking-widest text-slate-900">
+                        {group.name} {group.minSelection > 0 && <span className="text-rose-500">*</span>}
+                      </Label>
+                      {group.maxSelection === 1 && <Badge variant="secondary" className="text-[10px]">Pick 1</Badge>}
+                    </div>
+                    <div className="grid gap-2">
+                      {group.options.map((option: any) => {
+                        const isSelected = selectedModifiers[group.id]?.some((o: any) => o.id === option.id);
+                        return (
+                          <button
+                            key={option.id}
+                            onClick={() => {
+                              const current = selectedModifiers[group.id] || [];
+                              if (group.maxSelection === 1) {
+                                setSelectedModifiers({ ...selectedModifiers, [group.id]: [option] });
+                              } else {
+                                if (isSelected) {
+                                  setSelectedModifiers({ ...selectedModifiers, [group.id]: current.filter((o: any) => o.id !== option.id) });
+                                } else if (current.length < (group.maxSelection || 99)) {
+                                  setSelectedModifiers({ ...selectedModifiers, [group.id]: [...current, option] });
+                                }
+                              }
+                            }}
+                            className={cn(
+                              "flex items-center justify-between p-4 rounded-2xl border transition-all",
+                              isSelected ? "border-slate-900 bg-slate-900 text-white shadow-md" : "border-slate-100 bg-slate-50 text-slate-600"
+                            )}
+                          >
+                            <span className="font-bold text-sm">{option.name}</span>
+                            {option.price > 0 && (
+                              <span className={cn("text-xs font-bold", isSelected ? "text-white/80" : "text-slate-400")}>
+                                +{formatPrice(option.price, company?.currency).primary}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+
                 <div className="space-y-4 mb-8">
                   <Label className="text-sm font-bold flex items-center gap-2">
                     <MessageSquare size={16} className="text-slate-400" />

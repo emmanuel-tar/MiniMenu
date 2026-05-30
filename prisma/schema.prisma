@@ -51,7 +51,7 @@ model Category {
   description String?
   image       String?
   active      Boolean   @default(true)
-  sortOrder   Int       @default(0)
+  order       Int       @default(0)
   createdAt   DateTime  @default(now())
   products    Product[]
 }
@@ -86,9 +86,10 @@ model ProductionStation {
 model Printer {
   id          String            @id @default(uuid())
   name        String
-  type        String            @default("BROWSER") // BROWSER, NETWORK, PDF
+  type        String            @default("BROWSER") // BROWSER, NETWORK, USB, AGENT, PDF
   ipAddress   String?
   port        Int?
+  usbIdentifier String?         // System path (e.g. /dev/usb/lp0) or device name
   stationId   String?
   role        String            @default("CASHIER") // CASHIER, KITCHEN, BAR
   active      Boolean           @default(true)
@@ -96,6 +97,7 @@ model Printer {
   createdAt   DateTime          @default(now())
   company     Company           @relation(fields: [companyId], references: [id])
   station     ProductionStation? @relation(fields: [stationId], references: [id])
+  printLogs   PrintLog[]
 }
 
 model ReceiptSetting {
@@ -147,6 +149,7 @@ model Product {
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
   orderItems      OrderItem[]
+  modifierGroups  ModifierGroup[]
   inventoryItem   InventoryItem?    @relation(fields: [inventoryItemId], references: [id])
   station         ProductionStation? @relation(fields: [stationId], references: [id])
   group           ProductGroup?      @relation(fields: [groupId], references: [id])
@@ -180,12 +183,12 @@ model StockLog {
 
 model AuditLog {
   id        String   @id @default(uuid())
-  userId    String
+  userId    String?
   action    String
   module    String
   details   String?
   timestamp DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id])
+  user      User?    @relation(fields: [userId], references: [id])
 }
 
 model Payment {
@@ -205,6 +208,7 @@ model Table {
   id        String   @id @default(uuid())
   name      String
   capacity  Int      @default(4)
+  guestCount Int      @default(0)
   status    String   @default("AVAILABLE")
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -284,33 +288,38 @@ model Tip {
 model KOT {
   id        String            @id @default(uuid())
   orderId   String
-  stationId String
-  status    String            @default("PENDING")
+  stationId String?
+  status    String            @default("PENDING") // PENDING, ACCEPTED, PREPARING, READY, COMPLETED, REJECTED
+  rejectionReason String?
   prepTimeMinutes   Int?
   estimatedReadyTime DateTime?
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
-  station   ProductionStation @relation(fields: [stationId], references: [id])
+  station   ProductionStation? @relation(fields: [stationId], references: [id])
   order     Order             @relation(fields: [orderId], references: [id])
   items     OrderItem[]
+  kotItems  KOTItem[]
 }
 
 model OrderItem {
   id          String            @id @default(uuid())
   orderId     String
   productId   String
-  stationId   String
+  stationId   String?
   kotId       String?
   quantity    Int
   productName String
   price       Float
-  status      String            @default("PENDING")
+  status      String            @default("PENDING") // PENDING, ACCEPTED, PREPARING, READY, SERVED, REJECTED
+  rejectionReason String?
+  notes       String?
+  modifiers   Json?             @default("[]")
   prepTimeMinutes        Int?
   countdownStartedAt      DateTime?
   estimatedCompletionTime DateTime?
   createdAt   DateTime          @default(now())
   kot         KOT?              @relation(fields: [kotId], references: [id])
-  station     ProductionStation @relation(fields: [stationId], references: [id])
+  station     ProductionStation? @relation(fields: [stationId], references: [id])
   product     Product           @relation(fields: [productId], references: [id])
   order       Order             @relation(fields: [orderId], references: [id])
 }
@@ -324,7 +333,7 @@ model WaiterCall {
   status      String   @default("ACTIVE") // ACTIVE, DISMISSED, HANDLED, EXPIRED
   createdAt   DateTime @default(now())
   handledAt   DateTime?
-  expiresAt   DateTime
+  expiresAt   DateTime?
 }
 
 // DB-backed payment selections (replaces in-memory activePaymentSelections)
@@ -336,6 +345,47 @@ model PaymentSelection {
   status      String   @default("ACTIVE") // ACTIVE, CLEARED, SETTLED, EXPIRED
   createdAt   DateTime @default(now())
   clearedAt   DateTime?
-  expiresAt   DateTime
+  expiresAt   DateTime?
 }
 
+model KOTItem {
+  id          String   @id @default(uuid())
+  kotId       String
+  orderItemId String   @unique
+  productName String
+  quantity    Int
+  notes       String?
+  status      String   @default("PENDING")
+  modifiers   Json?    @default("[]")
+  createdAt   DateTime @default(now())
+  kot         KOT      @relation(fields: [kotId], references: [id], onDelete: Cascade)
+}
+
+model ModifierGroup {
+  id           String           @id @default(uuid())
+  name         String
+  minSelection Int              @default(0)
+  maxSelection Int?             @default(1)
+  productId    String
+  product      Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  options      ModifierOption[]
+}
+
+model ModifierOption {
+  id              String        @id @default(uuid())
+  name            String
+  price           Float         @default(0)
+  modifierGroupId String
+  group           ModifierGroup @relation(fields: [modifierGroupId], references: [id], onDelete: Cascade)
+}
+
+model PrintLog {
+  id        String   @id @default(uuid())
+  printerId String
+  type      String   // INVOICE, KOT
+  status    String   // SUCCESS, FAILED
+  content   String?
+  error     String?
+  timestamp DateTime @default(now())
+  printer   Printer  @relation(fields: [printerId], references: [id])
+}

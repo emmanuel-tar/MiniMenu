@@ -84,7 +84,12 @@ const CountdownDisplay = ({ targetDate }: { targetDate: string }) => {
 
   const mins = Math.floor(timeLeft / 60);
   const secs = timeLeft % 60;
-  const colorClass = timeLeft > 300 ? "text-emerald-500" : timeLeft > 0 ? "text-amber-500" : "text-rose-500 animate-pulse";
+  // Implementation of om32: Color System
+  const colorClass = timeLeft > 300 
+    ? "text-emerald-500" // On Time
+    : timeLeft > 0 
+      ? "text-amber-500 animate-pulse" // Near Due
+      : "text-rose-500 animate-bounce"; // Delayed
 
   return <span className={cn("font-mono font-bold", colorClass)}>{mins}m {secs}s</span>;
 };
@@ -108,6 +113,8 @@ export default function Orders() {
   const [isBillingOpen, setIsBillingOpen] = useState(false);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [isTimerDialogOpen, setIsTimerDialogOpen] = useState(false);
+  const [isRejectDialogOpen, setIsRejectDialogOpen] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState("");
   const [selectedKot, setSelectedKot] = useState<any>(null);
   const [prepTime, setPrepTime] = useState("15");
   const [orderToCancel, setOrderToCancel] = useState<any>(null);
@@ -305,6 +312,19 @@ export default function Orders() {
     printWindow.document.close();
   };
 
+  const handleMarkItemServed = async (itemId: string) => {
+    try {
+      const res = await fetch(`/api/admin/orders/items/${itemId}/served`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        toast.success('Item marked as served');
+        fetchData();
+      }
+    } catch (err) { toast.error('Connection error'); }
+  };
+
   const updateStatus = async (orderId: string, newStatus: string) => {
     try {
       const res = await fetch(`/api/admin/orders/${orderId}/status`, {
@@ -369,6 +389,18 @@ export default function Orders() {
       }
     } catch (err) {
       toast.error('Connection error');
+    }
+  };
+
+  const handleRejectKot = async () => {
+    if (!rejectionReason) return toast.error("Reason required");
+    try {
+      await updateKotStatus(selectedKot.id, 'REJECTED', undefined);
+      setIsRejectDialogOpen(false);
+      setRejectionReason("");
+      setSelectedKot(null);
+    } catch (err) {
+      toast.error('Rejection failed');
     }
   };
 
@@ -508,6 +540,16 @@ export default function Orders() {
                             <div key={item.id} className="flex items-center justify-between group/item gap-2">
                               <span className="text-xs text-slate-600 truncate">
                                 {item.quantity}x {item.productName}
+                                {item.modifiers && item.modifiers.length > 0 && (
+                                  <span className="block text-[10px] text-slate-400 italic">
+                                    ({item.modifiers.map((mod: any) => mod.name).join(', ')})
+                                  </span>
+                                )}
+                                {item.notes && (
+                                  <span className="block text-[10px] text-amber-600 font-medium">
+                                    Note: {item.notes}
+                                  </span>
+                                )}
                               </span>
                               {item.kotId && (
                                 <Button 
@@ -661,6 +703,16 @@ export default function Orders() {
                             <p className="text-sm font-semibold text-slate-800 leading-tight">
                               {item.productName}
                             </p>
+                            {item.modifiers && item.modifiers.length > 0 && (
+                              <div className="text-[10px] text-slate-500 italic mt-0.5">
+                                ({item.modifiers.map((mod: any) => mod.name).join(', ')})
+                              </div>
+                            )}
+                            {item.notes && (
+                              <div className="text-[10px] text-amber-600 font-medium mt-1">
+                                Note: {item.notes}
+                              </div>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -673,6 +725,15 @@ export default function Orders() {
                           onClick={() => { setSelectedKot(kot); setIsTimerDialogOpen(true); }}
                         >
                           Accept
+                        </Button>
+                      )}
+                      {kot.status === 'PENDING' && (
+                        <Button 
+                          variant="outline"
+                          className="w-full border-red-200 text-red-500 rounded-xl h-10 font-bold text-xs uppercase"
+                          onClick={() => { setSelectedKot(kot); setIsRejectDialogOpen(true); }}
+                        >
+                          Reject
                         </Button>
                       )}
                       {kot.status === 'ACCEPTED' && (

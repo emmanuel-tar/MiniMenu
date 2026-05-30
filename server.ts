@@ -26,6 +26,7 @@ interface PrintableKotItem {
   quantity: number;
   productName: string;
   notes?: string;
+  modifiers?: { name: string; price: number }[];
 }
 
 interface PrintableKot {
@@ -41,6 +42,7 @@ interface PrintableKot {
     type: string; // BROWSER, NETWORK, PDF
     ipAddress?: string;
     port?: number;
+    usbIdentifier?: string;
   };
 }
 
@@ -77,6 +79,7 @@ interface PrintableInvoice {
     type: string;
     ipAddress?: string;
     port?: number;
+    usbIdentifier?: string;
   };
 }
 
@@ -143,6 +146,14 @@ async function startServer() {
     await prisma.$connect();
     console.log("Successfully connected to the database");
     await syncSettingsCache();
+
+    // Clean up potentially malformed JSON in OrderItem.modifiers
+    try {
+        await prisma.$executeRaw`UPDATE OrderItem SET modifiers = '[]' WHERE modifiers IS NULL OR modifiers = ''`;
+        console.log("[DB Cleanup] Cleaned up OrderItem.modifiers for malformed JSON.");
+    } catch (cleanupError) {
+        console.warn("[DB Cleanup] Failed to clean up OrderItem.modifiers (might not be necessary or table doesn't exist yet):", cleanupError);
+    }
   } catch (error) {
     console.error("Failed to connect to the database:", error);
     process.exit(1);
@@ -173,12 +184,14 @@ async function startServer() {
     // Handle waiter calls
     socket.on("call-waiter", async (data: { tableId: string; tableName: string; reason: string }) => {
       try {
+        const expiresAt = new Date(Date.now() + ACTIVE_TTL_MINUTES * 60000);
         const call = await prisma.waiterCall.create({
           data: {
             tableId: data.tableId,
             tableName: data.tableName,
             reason: data.reason || 'Assistance',
-            status: 'ACTIVE'
+            status: 'ACTIVE',
+            expiresAt
           }
         });
         console.log(`[Socket] Waiter called to table: ${call.tableName}`);
@@ -199,16 +212,19 @@ async function startServer() {
 
         if (!order) return;
 
+      const expiresAt = new Date(Date.now() + ACTIVE_TTL_MINUTES * 60000);
       const selection = await prisma.paymentSelection.upsert({
         where: { orderId: data.orderId },
         update: { 
           method: data.method,
-          tableNumber: order.tableNumber || 'Walk-in'
+          tableNumber: order.tableNumber || 'Walk-in',
+          expiresAt
         },
         create: {
           orderId: data.orderId,
           method: data.method,
           tableNumber: order.tableNumber || 'Walk-in',
+          expiresAt
         }
       });
 
@@ -236,6 +252,7 @@ async function startServer() {
               name: targetPrinter.name,
               type: targetPrinter.type,
               ipAddress: targetPrinter.ipAddress || undefined,
+              usbIdentifier: targetPrinter.usbIdentifier || undefined,
               port: targetPrinter.port || undefined,
             }
           };
@@ -262,15 +279,18 @@ async function startServer() {
         if (!order || !company) return;
 
         // Notify admins/staff via existing payment request mechanism
+        const expiresAt = new Date(Date.now() + ACTIVE_TTL_MINUTES * 60000);
         const selection = await prisma.paymentSelection.upsert({
           where: { orderId: data.orderId },
           update: { 
-            method: 'BILL REQUEST' 
+            method: 'BILL REQUEST',
+            expiresAt
           },
           create: {
             orderId: data.orderId,
             method: 'BILL REQUEST',
             tableNumber: order.tableNumber || 'Walk-in',
+            expiresAt
           }
         });
         io.emit("payment-method-updated", selection);
@@ -315,6 +335,7 @@ async function startServer() {
               name: targetPrinter.name,
               type: targetPrinter.type,
               ipAddress: targetPrinter.ipAddress || undefined,
+              usbIdentifier: targetPrinter.usbIdentifier || undefined,
               port: targetPrinter.port || undefined
             }
           };
@@ -377,11 +398,16 @@ async function startServer() {
   const upload = multer({ storage });
 
   // Middleware for Auth
-  const authenticate = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  const authenticate = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) return res.status(401).json({ error: "Unauthorized" });
     const decoded = verifyToken(token);
     if (!decoded) return res.status(401).json({ error: "Invalid token" });
+    
+    // Verify user exists to prevent Foreign Key errors if DB was wiped/reset
+    const userExists = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    if (!userExists) return res.status(401).json({ error: "User session invalid or database reset" });
+
     req.user = decoded;
     next();
   };
@@ -715,6 +741,7 @@ async function startServer() {
             name: targetPrinter.name,
             type: targetPrinter.type,
             ipAddress: targetPrinter.ipAddress || undefined,
+            usbIdentifier: targetPrinter.usbIdentifier || undefined,
             port: targetPrinter.port || undefined,
           }
         };
@@ -736,17 +763,35 @@ async function startServer() {
     res.json(printers);
   });
 
+  // Get a list of printers installed on the server's OS
+  app.get("/api/settings/system-printers", authenticate, async (req, res) => {
+    try {
+      // On Windows, you might use a command like 'wmic printer get name'
+      // For this example, we return a mock list. 
+      // In production, you'd use: const printers = await printer.getPrinters();
+      const systemPrinters = [
+        { name: "XP-80", driver: "Thermal" },
+        { name: "POS-58", driver: "Thermal" },
+        { name: "Microsoft Print to PDF", driver: "System" }
+      ];
+      res.json(systemPrinters);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch system printers" });
+    }
+  });
+
   app.post("/api/settings/printers", authenticate, async (req: AuthenticatedRequest, res: Response) => {
     if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
     const company = await prisma.company.findFirst();
     if (!company) return res.status(400).json({ error: "Company profile must be created first" });
     
     try {
-      const { stationId, port, ...rest } = req.body;
+      const { stationId, port, usbIdentifier, ...rest } = req.body;
       const printer = await prisma.printer.create({
         data: { 
           ...rest, 
           port: parseInt(String(port)) || 9100,
+          usbIdentifier: usbIdentifier || null,
           stationId: (stationId === "" || stationId === undefined) ? null : stationId,
           companyId: company.id 
         }
@@ -827,7 +872,7 @@ async function startServer() {
         try {
           await tx.auditLog.create({
             data: {
-              userId: (req as AuthenticatedRequest).user?.userId || 'SYSTEM',
+              userId: (req as AuthenticatedRequest).user?.userId || null,
               action: `ORDER_PAID_${method}`,
               module: 'ORDERS',
             }
@@ -904,6 +949,7 @@ async function startServer() {
             name: targetPrinter.name,
             type: targetPrinter.type,
             ipAddress: targetPrinter.ipAddress || undefined,
+            usbIdentifier: targetPrinter.usbIdentifier || undefined,
             port: targetPrinter.port || undefined
           }
         };
@@ -1007,7 +1053,7 @@ async function startServer() {
 
         await tx.auditLog.create({
           data: {
-            userId: (req as AuthenticatedRequest).user?.userId || 'SYSTEM',
+            userId: (req as AuthenticatedRequest).user?.userId || null,
             action: `PAYMENT_${isSettled ? 'SETTLED' : 'PARTIAL'}_${method}`,
             module: 'ORDERS',
           }
@@ -1592,7 +1638,12 @@ async function startServer() {
 
   // Waiter Requests API
   app.get("/api/admin/waiter-calls", authenticate, async (req, res) => {
-    const calls = await prisma.waiterCall.findMany({ where: { status: 'ACTIVE' } });
+    const calls = await prisma.waiterCall.findMany({ 
+      where: { 
+        status: 'ACTIVE',
+        expiresAt: { gt: new Date() }
+      } 
+    });
     res.json(calls);
   });
 
@@ -1604,7 +1655,11 @@ async function startServer() {
 
   // Active Payment Selections API
   app.get("/api/admin/payment-selections", authenticate, async (req, res) => {
-    const selections = await prisma.paymentSelection.findMany();
+    const selections = await prisma.paymentSelection.findMany({
+      where: {
+        expiresAt: { gt: new Date() }
+      }
+    });
     res.json(selections);
   });
 
@@ -1758,7 +1813,8 @@ async function startServer() {
     try {
       const product = await prisma.product.update({
         where: { id },
-        data: productData
+        data: productData,
+        include: { category: true, group: true, station: true }
       });
       res.json(product);
     } catch (error) {
@@ -1866,8 +1922,8 @@ async function startServer() {
       });
 
       const [activeCalls, activePayments] = await Promise.all([
-        prisma.waiterCall.findMany({ where: { status: 'ACTIVE' } }),
-        prisma.paymentSelection.findMany()
+        prisma.waiterCall.findMany({ where: { status: 'ACTIVE', expiresAt: { gt: new Date() } } }),
+        prisma.paymentSelection.findMany({ where: { expiresAt: { gt: new Date() } } })
       ]);
 
       const tablesWithContext = tables.map(table => ({
@@ -1878,6 +1934,132 @@ async function startServer() {
       res.json(tablesWithContext);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch table status" });
+    }
+  });
+
+  // Modifier Group Management
+  app.get("/api/menu/modifier-groups", async (req, res) => {
+    try {
+      const modifierGroups = await prisma.modifierGroup.findMany({
+        include: { product: { select: { name: true } }, options: true },
+        orderBy: { name: 'asc' }
+      });
+      res.json(modifierGroups);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch modifier groups" });
+    }
+  });
+
+  app.post("/api/menu/modifier-groups", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const { name, minSelection, maxSelection, productId } = req.body;
+    try {
+      const newGroup = await prisma.modifierGroup.create({
+        data: {
+          name,
+          minSelection: parseInt(minSelection),
+          maxSelection: maxSelection ? parseInt(maxSelection) : null,
+          productId
+        },
+        include: { product: { select: { name: true } }, options: true }
+      });
+      res.json(newGroup);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message.includes('unique constraint') ? 'Modifier group name must be unique for this product.' : 'Failed to create modifier group' });
+    }
+  });
+
+  app.put("/api/menu/modifier-groups/:id", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const { id } = req.params;
+    const { name, minSelection, maxSelection, productId } = req.body;
+    try {
+      const updatedGroup = await prisma.modifierGroup.update({
+        where: { id },
+        data: {
+          name,
+          minSelection: parseInt(minSelection),
+          maxSelection: maxSelection ? parseInt(maxSelection) : null,
+          productId
+        },
+        include: { product: { select: { name: true } }, options: true }
+      });
+      res.json(updatedGroup);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message.includes('unique constraint') ? 'Modifier group name must be unique for this product.' : 'Failed to update modifier group' });
+    }
+  });
+
+  app.delete("/api/menu/modifier-groups/:id", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const { id } = req.params;
+    try {
+      await prisma.modifierGroup.delete({ where: { id } });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete modifier group" });
+    }
+  });
+
+  // Modifier Option Management
+  app.post("/api/menu/modifier-groups/:groupId/options", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const { groupId } = req.params;
+    const { name, price } = req.body;
+    try {
+      const option = await prisma.modifierOption.create({
+        data: {
+          name,
+          price: parseFloat(String(price)) || 0,
+          modifierGroupId: groupId
+        }
+      });
+      res.json(option);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to create modifier option" });
+    }
+  });
+
+  app.put("/api/menu/modifier-groups/options/:id", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const { id } = req.params;
+    const { name, price } = req.body;
+    try {
+      const updated = await prisma.modifierOption.update({
+        where: { id },
+        data: {
+          name,
+          price: parseFloat(String(price)) || 0
+        }
+      });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update modifier option" });
+    }
+  });
+
+  app.delete("/api/menu/modifier-groups/options/:id", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+    const { id } = req.params;
+    try {
+      await prisma.modifierOption.delete({ where: { id } });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete modifier option" });
+    }
+  });
+
+  // Get all modifiers for a specific product
+  app.get("/api/menu/products/:id/modifiers", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const groups = await prisma.modifierGroup.findMany({
+        where: { productId: id },
+        include: { options: true }
+      });
+      res.json(groups);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch modifiers" });
     }
   });
 
@@ -1906,18 +2088,20 @@ async function startServer() {
             where: { id: tableId },
             data: { 
               status: 'OCCUPIED',
-              guestCount: parseInt(String(guestCount)) || 1
+              guestCount: tableId ? (parseInt(String(guestCount)) || 1) : 0
             }
           });
           io.emit("table-status-updated", { tableId, status: 'OCCUPIED', guestCount: table.guestCount });
         }
 
-        const orderItemsData = [];
-        
-        const stationItemsMap = new Map<string, any[]>();
+        const orderItemsData: any[] = [];
         
         for (const item of items) {
-          const product = await tx.product.findUnique({ where: { id: item.productId } });
+          const product = await tx.product.findUnique({ 
+            where: { id: item.productId },
+            include: { modifierGroups: { include: { options: true } } }
+          });
+
           if (product) {
             if (!product.available) {
               throw new Error(`Product "${product.name}" is currently unavailable and cannot be ordered.`);
@@ -1931,23 +2115,27 @@ async function startServer() {
               throw new Error(`Invalid quantity for product "${product.name}". Quantity must be greater than zero.`);
             }
 
-            // Snapshot Architecture: Use current price for this specific order record
-            totalAmount += product.price * item.quantity;
+            // Calculate Modifier Prices
+            let modifiersPrice = 0;
+            const selectedModifierDetails = item.selectedModifiers || [];
+            selectedModifierDetails.forEach((mod: any) => {
+              modifiersPrice += mod.price || 0;
+            });
+
+            const itemTotal = (product.price + modifiersPrice) * item.quantity;
+            totalAmount += itemTotal;
+
             const orderItem = {
               productId: product.id,
               productName: product.name,
               quantity: item.quantity,
-              price: product.price,
-              // Route via the product's assigned station
+              price: product.price + modifiersPrice,
               stationId: product.stationId,
+              notes: item.notes || null,
+              modifiers: selectedModifierDetails, // Storing as JSON in OrderItem
               status: 'PENDING'
             };
             orderItemsData.push(orderItem);
-
-            // Group by station for KOT
-            const stationItems = stationItemsMap.get(product.stationId) || [];
-            stationItems.push(orderItem);
-            stationItemsMap.set(product.stationId, stationItems);
 
             // Automatic Inventory Deduction
             if (product.inventoryItemId) {
@@ -1991,29 +2179,112 @@ async function startServer() {
             tableNumber: resolvedTableNumber,
             totalAmount,
             status: 'PENDING',
+            guestCount: tableId ? (parseInt(String(guestCount)) || 1) : 1,
+            items: {
+              create: orderItemsData
+            }
           },
           include: { items: true }
         });
 
-        // Create KOTs and link items
-        for (const [stationId, itemsForStation] of stationItemsMap.entries()) {
-          await tx.kOT.create({
+        // Create KOTs and link created items via KOTItem records
+        const stationGroups = new Map<string, any[]>();
+        order.items.forEach(item => {
+          const stationId = item.stationId || 'unassigned';
+          const group = stationGroups.get(stationId) || [];
+          group.push(item);
+          stationGroups.set(stationId, group);
+        });
+
+        const createdKots: any[] = [];
+        for (const [stationId, itemsForKOT] of stationGroups.entries()) {
+          const createdKot = await tx.kOT.create({
             data: {
               orderId: order.id,
               stationId,
               status: 'PENDING',
-              items: {
-                create: itemsForStation.map(i => ({
-                  ...i,
-                  orderId: order.id
+              kotItems: {
+                create: itemsForKOT.map(i => ({
+                  orderItemId: i.id,
+                  productName: i.productName,
+                  quantity: i.quantity,
+                  notes: i.notes || null,
+                  modifiers: i.modifiers || []
                 }))
               }
             }
           });
+
+          // Link OrderItems to KOT so they appear in Kitchen View
+          await tx.orderItem.updateMany({
+            where: { id: { in: itemsForKOT.map(i => i.id) } },
+            data: { kotId: createdKot.id }
+          });
+
+          createdKots.push(createdKot);
         }
+
+        // Pass created KOT ids back to the caller for post-transaction auto-print
+        (order as any).__createdKots = createdKots;
 
         return order;
       });
+
+      // Auto-print KOTs for the stations involved (on every new order)
+      try {
+        const autoPrintKots = (order as any).__createdKots as Array<{ id: string; stationId: string | null }>; 
+        const receiptSettings = await prisma.receiptSetting.findFirst();
+        const company = await prisma.company.findFirst();
+
+        // If you want a separate toggle later, this is where it will live.
+        if (receiptSettings?.autoPrint && company && Array.isArray(autoPrintKots) && autoPrintKots.length > 0) {
+          for (const createdKot of autoPrintKots) {
+            const kot = await prisma.kOT.findUnique({
+              where: { id: createdKot.id },
+              include: {
+                station: true,
+                items: true,
+                order: true,
+              }
+            });
+
+            if (!kot || !kot.station) continue;
+
+            const stationPrinters = kot.station.printers.filter(p =>
+              p.active && (p.role === 'KITCHEN' || p.role === 'BAR' || p.role === 'GRILL' || p.role === 'SHISHA')
+            );
+
+            if (stationPrinters.length === 0) continue;
+
+            const targetPrinter = stationPrinters[0];
+            const printableKot: PrintableKot = {
+              kotId: kot.id,
+              orderId: kot.orderId,
+              tableNumber: kot.order.tableNumber || 'Walk-in',
+              stationName: kot.station.name,
+              items: kot.items.map(item => ({
+                quantity: item.quantity,
+                productName: item.productName,
+                notes: item.notes || undefined,
+                modifiers: item.modifiers as any || undefined,
+              })),
+              createdAt: kot.createdAt.toISOString(),
+              printer: {
+                id: targetPrinter.id,
+                name: targetPrinter.name,
+                type: targetPrinter.type,
+                ipAddress: (targetPrinter as any).ipAddress || undefined,
+                usbIdentifier: (targetPrinter as any).usbIdentifier || undefined,
+                port: (targetPrinter as any).port || undefined,
+              }
+            };
+
+            io.emit('print-kot', printableKot);
+          }
+        }
+      } catch (printErr) {
+        console.error('[AutoPrintKOT] failed:', printErr);
+      }
 
       // Notify all admins in real-time that a new order has arrived
       io.emit("new-order-received", {
@@ -2038,6 +2309,21 @@ async function startServer() {
     });
     if (!order) return res.status(404).json({ error: "Order not found" });
     res.json(order);
+  });
+
+  // Customer payment submission
+  app.post("/api/orders/:id/submit-payment", async (req, res) => {
+    const { id } = req.params;
+    const { method, reference } = req.body;
+    try {
+      await prisma.order.update({
+        where: { id },
+        data: { status: 'PAYMENT_SUBMITTED' }
+      });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to submit payment" });
+    }
   });
 
   app.get("/api/admin/orders", authenticate, async (req, res) => {
@@ -2068,7 +2354,7 @@ async function startServer() {
       try {
         await prisma.auditLog.create({
           data: {
-            userId: (req as any).user?.userId || 'SYSTEM',
+            userId: (req as any).user?.userId || null,
             action: `ORDER_STATUS_UPDATE_${status}`,
             module: 'ORDERS',
           }
@@ -2101,6 +2387,229 @@ async function startServer() {
     }
   });
 
+  // Order Modification API - Add Item
+  app.post("/api/admin/orders/:orderId/items", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN' && req.user?.role !== 'CASHIER') {
+      return res.status(403).json({ error: 'Forbidden: Only Admin or Cashier can modify orders.' });
+    }
+    const { orderId } = req.params;
+    const { productId, quantity, notes, selectedModifiers } = req.body;
+
+    if (!productId || !quantity || quantity <= 0) {
+      return res.status(400).json({ error: "Product ID and a positive quantity are required." });
+    }
+
+    try {
+      const updatedOrder = await prisma.$transaction(async (tx) => {
+        const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: true } });
+        if (!order) throw new Error("Order not found.");
+
+        const product = await tx.product.findUnique({ where: { id: productId } });
+        if (!product) throw new Error("Product not found.");
+        if (!product.available) throw new Error(`Product "${product.name}" is currently unavailable.`);
+
+        // Calculate item price including modifiers
+        let modifiersPrice = 0;
+        if (selectedModifiers && Array.isArray(selectedModifiers)) {
+          selectedModifiers.forEach((mod: any) => {
+            modifiersPrice += mod.price || 0;
+          });
+        }
+        const itemPrice = product.price + modifiersPrice;
+        const itemTotal = itemPrice * quantity;
+
+        // Create the new order item
+        const newOrderItem = await tx.orderItem.create({
+          data: {
+            orderId: order.id,
+            productId: product.id,
+            productName: product.name,
+            quantity: quantity,
+            price: itemPrice,
+            stationId: product.stationId,
+            notes: notes || null,
+            modifiers: selectedModifiers || [], // Store modifiers as JSON
+            status: 'PENDING',
+          }
+        });
+
+        // Update order total
+        const newTotalAmount = order.totalAmount + itemTotal;
+        const updatedOrderRecord = await tx.order.update({
+          where: { id: orderId },
+          data: { totalAmount: newTotalAmount },
+          include: { items: true } // Re-include items to get the latest state
+        });
+
+        // Handle KOT creation/update
+        if (product.stationId) {
+          let kot = await tx.kOT.findFirst({
+            where: { orderId: order.id, stationId: product.stationId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+          });
+
+          if (!kot) {
+            // Create a new KOT if one doesn't exist for this station and order
+            kot = await tx.kOT.create({
+              data: {
+                orderId: order.id,
+                stationId: product.stationId,
+                status: 'PENDING',
+              }
+            });
+          }
+
+          // Add the item to the KOT
+          await tx.kOTItem.create({
+            data: {
+              kotId: kot.id,
+              orderItemId: newOrderItem.id,
+              productName: newOrderItem.productName,
+              quantity: newOrderItem.quantity,
+              notes: newOrderItem.notes,
+              modifiers: newOrderItem.modifiers,
+            }
+          });
+          io.emit("kot-updated", { kotId: kot.id, orderId: order.id, action: 'item_added' });
+
+          // Link the new OrderItem to the KOT
+          await tx.orderItem.update({
+            where: { id: newOrderItem.id },
+            data: { kotId: kot.id }
+          });
+        }
+
+        // Inventory deduction
+        if (product.inventoryItemId) {
+          const invItem = await tx.inventoryItem.findUnique({ where: { id: product.inventoryItemId } });
+          if (invItem) {
+            if (invItem.quantity < quantity) {
+              throw new Error(`Insufficient stock for "${product.name}". Only ${invItem.quantity} ${invItem.unit} remaining.`);
+            }
+            const newStock = invItem.quantity - quantity;
+            await tx.inventoryItem.update({
+              where: { id: invItem.id },
+              data: { quantity: newStock }
+            });
+            await tx.stockLog.create({
+              data: {
+                inventoryItemId: invItem.id,
+                change: -quantity,
+                previousStock: invItem.quantity,
+                newStock,
+                reason: `ORDER_MODIFICATION_ADD (#${order.id})`
+              }
+            });
+            if (newStock <= 0) {
+              await tx.product.updateMany({
+                where: { inventoryItemId: invItem.id },
+                data: { available: false }
+              });
+              io.emit("menu-updated"); // Notify frontend to update menu availability
+            }
+          }
+        }
+
+        return updatedOrderRecord;
+      });
+
+      io.emit("order-updated", { orderId, newTotalAmount: updatedOrder.totalAmount, items: updatedOrder.items });
+      io.to(`order-${orderId}`).emit("order-updated", { newTotalAmount: updatedOrder.totalAmount, items: updatedOrder.items }); // For customer tracking
+      res.json(updatedOrder);
+    } catch (error: any) {
+      console.error("Add item to order error:", error);
+      res.status(500).json({ error: error.message || "Failed to add item to order." });
+    }
+  });
+
+  // Order Modification API - Remove Item
+  app.delete("/api/admin/orders/:orderId/items/:orderItemId", authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    if (req.user?.role !== 'ADMIN' && req.user?.role !== 'CASHIER') {
+      return res.status(403).json({ error: 'Forbidden: Only Admin or Cashier can modify orders.' });
+    }
+    const { orderId, orderItemId } = req.params;
+
+    try {
+      const updatedOrder = await prisma.$transaction(async (tx) => {
+        const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: true } });
+        if (!order) throw new Error("Order not found.");
+
+        const orderItem = await tx.orderItem.findUnique({ where: { id: orderItemId } });
+        if (!orderItem) throw new Error("Order item not found.");
+        if (orderItem.orderId !== orderId) throw new Error("Order item does not belong to this order.");
+
+        // Calculate item's value to subtract from order total
+        const itemTotal = orderItem.price * orderItem.quantity;
+
+        // Update order total
+        const newTotalAmount = order.totalAmount - itemTotal;
+        const updatedOrderRecord = await tx.order.update({
+          where: { id: orderId },
+          data: { totalAmount: newTotalAmount },
+          include: { items: true }
+        });
+
+        // Handle KOT item removal
+        if (orderItem.stationId) {
+          const kotItem = await tx.kOTItem.findFirst({ where: { orderItemId: orderItem.id } });
+          if (kotItem) {
+            await tx.kOTItem.delete({ where: { id: kotItem.id } });
+
+            // Check if the KOT is now empty
+            const remainingKotItems = await tx.kOTItem.count({ where: { kotId: kotItem.kotId } });
+            if (remainingKotItems === 0) {
+              await tx.kOT.delete({ where: { id: kotItem.kotId } });
+              io.emit("kot-updated", { kotId: kotItem.kotId, orderId: order.id, action: 'deleted' });
+            } else {
+              io.emit("kot-updated", { kotId: kotItem.kotId, orderId: order.id, action: 'item_removed' });
+            }
+          }
+        }
+
+        // Inventory restoration
+        const product = await tx.product.findUnique({ where: { id: orderItem.productId } });
+        if (product?.inventoryItemId) {
+          const invItem = await tx.inventoryItem.findUnique({ where: { id: product.inventoryItemId } });
+          if (invItem) {
+            const newStock = invItem.quantity + orderItem.quantity;
+            await tx.inventoryItem.update({
+              where: { id: invItem.id },
+              data: { quantity: newStock }
+            });
+            await tx.stockLog.create({
+              data: {
+                inventoryItemId: invItem.id,
+                change: orderItem.quantity,
+                previousStock: invItem.quantity,
+                newStock,
+                reason: `ORDER_MODIFICATION_REMOVE (#${order.id})`
+              }
+            });
+            // If product was unavailable due to 0 stock, make it available again
+            if (invItem.quantity <= 0 && newStock > 0) {
+              await tx.product.updateMany({
+                where: { inventoryItemId: invItem.id },
+                data: { available: true }
+              });
+              io.emit("menu-updated");
+            }
+          }
+        }
+
+        // Delete the order item
+        await tx.orderItem.delete({ where: { id: orderItemId } });
+
+        return updatedOrderRecord;
+      });
+
+      io.emit("order-updated", { orderId, newTotalAmount: updatedOrder.totalAmount, items: updatedOrder.items });
+      io.to(`order-${orderId}`).emit("order-updated", { newTotalAmount: updatedOrder.totalAmount, items: updatedOrder.items }); // For customer tracking
+      res.json(updatedOrder);
+    } catch (error: any) {
+      console.error("Remove item from order error:", error);
+      res.status(500).json({ error: error.message || "Failed to remove item from order." });
+    }
+  });
+
   // KOT Management
   app.get("/api/admin/kots", authenticate, async (req, res) => {
     const kots = await prisma.kOT.findMany({
@@ -2116,9 +2625,9 @@ async function startServer() {
 
   app.put("/api/admin/kots/:id/status", authenticate, async (req, res) => {
     const { id } = req.params;
-    const { status, prepTimeMinutes } = req.body;
+    const { status, prepTimeMinutes, rejectionReason } = req.body;
     try {
-      const updateData: any = { status };
+      const updateData: any = { status, rejectionReason };
       
       if (status === 'ACCEPTED' && prepTimeMinutes) {
         const readyTime = new Date();
@@ -2137,7 +2646,8 @@ async function startServer() {
       await prisma.orderItem.updateMany({
         where: { kotId: id },
         data: { 
-          status,
+          status: status === 'COMPLETED' ? 'READY' : status, // KOT 'Served' marks items as 'READY' for waiter
+          rejectionReason,
           ...(status === 'ACCEPTED' && { 
             prepTimeMinutes,
             countdownStartedAt: new Date(),
@@ -2155,9 +2665,36 @@ async function startServer() {
         });
       }
 
+      io.emit("kot-status-updated", { kotId: id, status, orderId: kot.orderId });
       res.json(kot);
     } catch (error) {
       res.status(500).json({ error: "Failed to update KOT status" });
+    }
+  });
+
+  // New endpoint to mark individual items as SERVED by Waiter
+  app.patch("/api/admin/orders/items/:id/served", authenticate, async (req, res) => {
+    try {
+      const item = await prisma.orderItem.update({
+        where: { id: req.params.id },
+        data: { status: 'SERVED' },
+        include: { order: { include: { items: true } } }
+      });
+
+      // Auto-update order to AWAITING_PAYMENT if all items are served
+      const allServed = item.order.items.every(i => i.status === 'SERVED' || i.status === 'REJECTED');
+      if (allServed && item.order.status !== 'PAID') {
+        await prisma.order.update({
+          where: { id: item.orderId },
+          data: { status: 'AWAITING_PAYMENT' }
+        });
+        io.emit("order-status-updated", { orderId: item.orderId, status: 'AWAITING_PAYMENT' });
+      }
+
+      io.emit("item-served", { itemId: item.id, orderId: item.orderId });
+      res.json(item);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to mark item served" });
     }
   });
 
@@ -2185,18 +2722,21 @@ async function startServer() {
           kotId: kot.id,
           orderId: kot.orderId,
           tableNumber: kot.order.tableNumber || 'Walk-in',
-          stationName: kot.station.name,
+          stationName: kot.station?.name || 'Unknown Station',
           items: kot.items.map(item => ({
             quantity: item.quantity,
-            productName: item.productName
+            productName: item.productName,
+            notes: item.notes || undefined,
+            modifiers: item.modifiers as { name: string; price: number }[] || undefined,
           })),
           createdAt: kot.createdAt.toISOString(),
           printer: {
             id: targetPrinter.id,
             name: targetPrinter.name,
             type: targetPrinter.type,
-            ipAddress: targetPrinter.ipAddress || undefined,
-            port: targetPrinter.port || undefined,
+            ipAddress: (targetPrinter as any).ipAddress || undefined,
+            usbIdentifier: (targetPrinter as any).usbIdentifier || undefined,
+            port: (targetPrinter as any).port || undefined,
           }
         };
 
@@ -2228,82 +2768,82 @@ async function startServer() {
   // Network Print Proxy
   app.post("/api/print/network", authenticate, async (req: AuthenticatedRequest, res: Response) => {
     const data = req.body;
-    if (!data.printer?.ipAddress) return res.status(400).json({ error: "Printer IP is required" });
+    if (data.printer?.type === 'NETWORK' && !data.printer?.ipAddress) return res.status(400).json({ error: "Printer IP is required" });
+    if (data.printer?.type === 'USB' && !data.printer?.usbIdentifier) return res.status(400).json({ error: "USB Identifier is required" });
     const isInvoice = data.subtotal !== undefined;
     const orderSummary = `Order #${data.orderId.slice(0, 8)} - Table ${data.tableNumber}`;
 
-    try {
-      const client = new net.Socket();
-      const port = data.printer.port || 9100;
-      const host = data.printer.ipAddress;
+    const ESC = '\x1b';
+    const GS = '\x1d';
+    const INIT = ESC + '@';
+    const CENTER = ESC + 'a' + '\x01';
+    const RIGHT = ESC + 'a' + '\x02';
+    const LEFT = ESC + 'a' + '\x00';
+    const BOLD_ON = ESC + 'E' + '\x01';
+    const BOLD_OFF = ESC + 'E' + '\x00';
+    const CUT = GS + 'V' + '\x41' + '\x00';
+    const SELECT_CP858 = ESC + 't' + '\x13';
 
-      client.setTimeout(5000);
-
-      client.connect(port, host, async () => {
-        // Simple ESC/POS Command Generation
-        const ESC = '\x1b';
-        const GS = '\x1d';
-        const INIT = ESC + '@';
-        const CENTER = ESC + 'a' + '\x01';
-        const RIGHT = ESC + 'a' + '\x02';
-        const LEFT = ESC + 'a' + '\x00';
-        const BOLD_ON = ESC + 'E' + '\x01';
-        const BOLD_OFF = ESC + 'E' + '\x00';
-        const CUT = GS + 'V' + '\x41' + '\x00';
-        const SELECT_CP858 = ESC + 't' + '\x13'; // Select PC858 code page
-
-        let buffer = Buffer.concat([
-          Buffer.from(INIT + SELECT_CP858 + CENTER + BOLD_ON)
-        ]);
-        
-        if (isInvoice) {
-          buffer = Buffer.concat([buffer, printerEncode((data.company?.name || 'INVOICE').toUpperCase() + '\n')]);
-          buffer = Buffer.concat([buffer, printerEncode(BOLD_OFF + (data.company?.address || '') + '\n')]);
-          buffer = Buffer.concat([buffer, printerEncode(`Table: ${data.tableNumber}\n`)]);
-          buffer = Buffer.concat([buffer, printerEncode(`Order: #${data.orderId.slice(0, 8)}\n`)]);
-          buffer = Buffer.concat([buffer, printerEncode('--------------------------------\n' + LEFT)]);
-          
-          data.items.forEach((item: any) => {
-            buffer = Buffer.concat([buffer, printerEncode(`${item.quantity}x ${item.productName}\n`)]);
-            buffer = Buffer.concat([buffer, printerEncode(RIGHT + `${data.company.currency}${(item.price * item.quantity).toLocaleString()}\n` + LEFT)]);
-          });
-          
-          buffer = Buffer.concat([buffer, printerEncode('--------------------------------\n' + RIGHT)]);
-          buffer = Buffer.concat([buffer, printerEncode(`Subtotal: ${data.company.currency}${data.subtotal.toLocaleString()}\n`)]);
-          if (data.taxAmount > 0) buffer = Buffer.concat([buffer, printerEncode(`Tax: ${data.company.currency}${data.taxAmount.toLocaleString()}\n`)]);
-          buffer = Buffer.concat([buffer, printerEncode(BOLD_ON + `TOTAL: ${data.company.currency}${data.totalAmount.toLocaleString()}\n` + BOLD_OFF)]);
-        } else {
-          buffer = Buffer.concat([buffer, printerEncode('KITCHEN ORDER TICKET\n')]);
-          buffer = Buffer.concat([buffer, printerEncode(`TABLE: ${data.tableNumber}\n`)]);
-          buffer = Buffer.concat([buffer, printerEncode(BOLD_OFF + `Station: ${data.stationName}\n`)]);
-          buffer = Buffer.concat([buffer, printerEncode(`Order: #${data.orderId.slice(0, 8)}\n`)]);
-          buffer = Buffer.concat([buffer, printerEncode('--------------------------------\n' + LEFT)]);
-          
-          data.items.forEach((item: any) => {
-            buffer = Buffer.concat([buffer, printerEncode(`${item.quantity}x ${item.productName}\n`)]);
-            if (item.notes) buffer = Buffer.concat([buffer, printerEncode(`  * ${item.notes}\n`)]);
+    let buffer = Buffer.concat([Buffer.from(INIT + SELECT_CP858 + CENTER + BOLD_ON)]);
+    
+    if (isInvoice) {
+      buffer = Buffer.concat([buffer, printerEncode((data.company?.name || 'INVOICE').toUpperCase() + '\n')]);
+      buffer = Buffer.concat([buffer, printerEncode(BOLD_OFF + (data.company?.address || '') + '\n')]);
+      buffer = Buffer.concat([buffer, printerEncode(`Table: ${data.tableNumber}\nOrder: #${data.orderId.slice(0, 8)}\n--------------------------------\n` + LEFT)]);
+      data.items.forEach((item: any) => {
+        buffer = Buffer.concat([buffer, printerEncode(`${item.quantity}x ${item.productName}\n`)]);
+        buffer = Buffer.concat([buffer, printerEncode(RIGHT + `${data.company.currency}${(item.price * item.quantity).toLocaleString()}\n` + LEFT)]);
+      });
+      buffer = Buffer.concat([buffer, printerEncode('--------------------------------\n' + RIGHT + `Subtotal: ${data.company.currency}${data.subtotal.toLocaleString()}\n`)]);
+      if (data.taxAmount > 0) buffer = Buffer.concat([buffer, printerEncode(`Tax: ${data.company.currency}${data.taxAmount.toLocaleString()}\n`)]);
+      buffer = Buffer.concat([buffer, printerEncode(BOLD_ON + `TOTAL: ${data.company.currency}${data.totalAmount.toLocaleString()}\n` + BOLD_OFF)]);
+    } else {
+      buffer = Buffer.concat([buffer, printerEncode(`KITCHEN ORDER TICKET\nTABLE: ${data.tableNumber}\n`)]);
+      buffer = Buffer.concat([buffer, printerEncode(BOLD_OFF + `Station: ${data.stationName}\nOrder: #${data.orderId.slice(0, 8)}\n--------------------------------\n` + LEFT)]);
+      data.items.forEach((item: any) => {
+        buffer = Buffer.concat([buffer, printerEncode(`${item.quantity}x ${item.productName}\n`)]);
+        if (item.notes) buffer = Buffer.concat([buffer, printerEncode(`  * ${item.notes}\n`)]);
+        if (item.modifiers && item.modifiers.length > 0) {
+          item.modifiers.forEach((mod: any) => {
+            buffer = Buffer.concat([buffer, printerEncode(`    - ${mod.name}${mod.price > 0 ? ` (+${mod.price.toLocaleString()})` : ''}\n`)]);
           });
         }
-        
-        buffer = Buffer.concat([buffer, printerEncode('--------------------------------\n' + CENTER)]);
-        buffer = Buffer.concat([buffer, printerEncode(new Date(data.createdAt).toLocaleString() + '\n')]);
-        buffer = Buffer.concat([buffer, Buffer.from('\n\n\n\n' + CUT)]);
+      });
+    }
+    buffer = Buffer.concat([buffer, printerEncode('--------------------------------\n' + CENTER + new Date(data.createdAt).toLocaleString() + '\n\n\n\n' + CUT)]);
 
+    if (data.printer?.type === 'AGENT') {
+      // The buffer is sent via the existing socket emission in the calling functions
+      return res.json({ success: true, message: "Job broadcasted to local agent" });
+    }
+
+    if (data.printer?.type === 'USB') {
+      try {
+        // Write directly to device file (Linux/Mac) or system path (Windows)
+        fs.writeFileSync(data.printer.usbIdentifier, buffer);
+        await prisma.printLog.create({
+          data: { printerId: data.printer.id, type: isInvoice ? 'INVOICE' : 'KOT', status: 'SUCCESS', content: orderSummary }
+        });
+        return res.json({ success: true });
+      } catch (usbErr: any) {
+        await prisma.printLog.create({
+          data: { printerId: data.printer.id, type: isInvoice ? 'INVOICE' : 'KOT', status: 'FAILED', error: usbErr.message, content: orderSummary }
+        });
+        return res.status(500).json({ error: `USB Print failed: ${usbErr.message}` });
+      }
+    }
+
+    try {
+      const client = new net.Socket();
+      client.setTimeout(5000);
+      client.connect(data.printer.port || 9100, data.printer.ipAddress, async () => {
         client.write(buffer);
         client.end();
-
-        // Log successful print
         try {
           await prisma.printLog.create({
-            data: {
-              printerId: data.printer.id,
-              type: isInvoice ? 'INVOICE' : 'KOT',
-              status: 'SUCCESS',
-              content: orderSummary
-            }
+            data: { printerId: data.printer.id, type: isInvoice ? 'INVOICE' : 'KOT', status: 'SUCCESS', content: orderSummary }
           });
-        } catch (logErr) { console.error("[PrintLog] Failed to save success log:", logErr); }
-
+        } catch (logErr) { }
         res.json({ success: true });
       });
 
